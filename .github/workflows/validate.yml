@@ -1,0 +1,90 @@
+name: Validasi Infrastruktur
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ALOS_WEB_IMAGE: example.invalid/alos-web:validation
+  ALOS_BACKEND_IMAGE: example.invalid/alos-backend:validation
+  GENESIS_IMAGE: example.invalid/genesis-ai:validation
+  POSTGRES_DB: alos_validation
+  POSTGRES_USER: alos_validation
+  POSTGRES_PASSWORD: ci
+  GENESIS_INTERNAL_TOKEN: ci
+  WEB_HOSTNAME: web.example.invalid
+  API_HOSTNAME: api.example.invalid
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validasi seluruh Compose file
+        shell: bash
+        run: |
+          set -euo pipefail
+          for environment in local staging production; do
+            docker compose \
+              --env-file "environments/${environment}/.env.example" \
+              -f "environments/${environment}/compose.yaml" \
+              config --quiet
+          done
+
+      - name: Validasi topology network
+        shell: bash
+        run: |
+          set -euo pipefail
+          for environment in local staging production; do
+            docker compose \
+              --env-file "environments/${environment}/.env.example" \
+              -f "environments/${environment}/compose.yaml" \
+              config --format json > "/tmp/${environment}.json"
+            jq -e '
+              .services.genesis.ports == null and
+              .services.postgres.ports == null and
+              .services.web.networks.internal == null and
+              .services.web.networks.data == null and
+              .networks.internal.internal == true and
+              .networks.data.internal == true
+            ' "/tmp/${environment}.json"
+          done
+          jq -e '[.services[] | has("build")] | any | not' /tmp/production.json
+          jq -e '[.services[] | (.command // []) | tostring | test("dev|reload"; "i")] | any | not' /tmp/production.json
+
+      - name: Validasi Caddyfile
+        run: >-
+          docker run --rm
+          -e WEB_HOSTNAME=web.example.invalid
+          -e API_HOSTNAME=api.example.invalid
+          -v "$PWD/reverse-proxy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
+          caddy:2.10-alpine
+          caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Validasi syntax script
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/health-check.sh
+          bash -n database/backup/backup.sh
+          bash -n database/restore/restore.sh
+          pwsh -NoProfile -Command '$errors = @(); Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { $tokens = $null; $parseErrors = $null; [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null; $errors += $parseErrors }; if ($errors.Count) { $errors | Format-List; exit 1 }'
+
+      - name: Validasi file dan boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(find . -path ./.git -prune -o -type f -empty -print)"
+          ! grep -Eiq 'genesis|8100' reverse-proxy/caddy/Caddyfile
+          ! grep -RInE --exclude='.env.example' --exclude-dir='.git' \
+            '^[[:space:]]*(POSTGRES_PASSWORD|GENESIS_INTERNAL_TOKEN)=.+' .
+          ! grep -RIl --exclude-dir='.git' -- 'BEGIN .*PRIVATE KEY' .
+
+      - name: Pastikan CI tidak melakukan deployment
+        run: test ! -e .github/workflows/deploy.yml

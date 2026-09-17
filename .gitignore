@@ -1,0 +1,11 @@
+**/.env
+**/.env.*
+!**/.env.example
+
+backups/*
+!backups/.gitkeep
+*.dump
+*.sql.gz
+*.log
+.DS_Store
+Thumbs.db

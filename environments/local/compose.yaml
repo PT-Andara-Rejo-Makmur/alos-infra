@@ -1,0 +1,112 @@
+name: alos-local
+
+services:
+  web:
+    build:
+      context: ../../../alos-web
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
+    ports:
+      - "127.0.0.1:${ALOS_WEB_PORT:-3000}:3000"
+    networks: [edge]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ../../../alos-backend
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: development
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      GENESIS_BASE_URL: http://genesis:8100
+      GENESIS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN}
+      OTEL_SERVICE_NAME: alos-backend
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "127.0.0.1:${ALOS_BACKEND_PORT:-8000}:8000"
+    networks: [edge, internal, data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  genesis:
+    build:
+      context: ../../../genesis-ai
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: development
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8100
+      ALOS_BACKEND_BASE_URL: http://backend:8000
+      ALOS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN}
+      OTEL_SERVICE_NAME: genesis-ai
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    expose: ["8100"]
+    networks: [internal, data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    expose: ["5432"]
+    networks: [data]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../../database/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.135.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    expose: ["4317", "4318"]
+    networks: [internal]
+    volumes:
+      - ../../observability/otel/collector-config.yaml:/etc/otelcol/config.yaml:ro
+    restart: unless-stopped
+
+networks:
+  edge:
+  internal:
+    internal: true
+  data:
+    internal: true
+
+volumes:
+  postgres-data:

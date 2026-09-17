@@ -1,0 +1,7 @@
+# Ganti placeholder dengan user atau tim GitHub organisasi yang sebenarnya.
+* @PLATFORM_OWNER
+/environments/ @PLATFORM_OWNER @BE_OWNER @AI_OWNER @FE_OWNER
+/database/ @PLATFORM_OWNER @BE_OWNER
+/reverse-proxy/ @PLATFORM_OWNER @BE_OWNER @FE_OWNER
+/security/ @PLATFORM_OWNER @SECURITY_OWNER
+/runbooks/ @PLATFORM_OWNER
