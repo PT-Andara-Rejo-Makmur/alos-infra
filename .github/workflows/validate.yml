@@ -22,9 +22,71 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workspace/alos-infra
     steps:
-      - name: Checkout repository
+      - name: Checkout Infra repository
         uses: actions/checkout@v4
+        with:
+          path: workspace/alos-infra
+
+      - name: Checkout canonical contracts
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/alos-contracts
+          ref: main
+          path: workspace/alos-contracts
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/alos-backend
+          ref: main
+          path: workspace/alos-backend
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Checkout GENESIS
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/genesis-ai
+          ref: main
+          path: workspace/genesis-ai
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Checkout Web
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/alos-web
+          ref: main
+          path: workspace/alos-web
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Build H1 service images with canonical contracts
+        run: |
+          set -euo pipefail
+          docker buildx build --load \
+            --tag alos-backend:h1-validation \
+            --build-context contracts=../alos-contracts \
+            ../alos-backend
+          docker buildx build --load \
+            --tag genesis-ai:h1-validation \
+            --build-context contracts=../alos-contracts \
+            ../genesis-ai
+          docker buildx build --load \
+            --tag alos-web:h1-validation \
+            --build-context contracts=../alos-contracts \
+            --build-arg NEXT_PUBLIC_ALOS_API_BASE_URL=https://api.example.invalid \
+            ../alos-web
+
+      - name: Verify canonical contract artifact in runtime images
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint python alos-backend:h1-validation -c \
+            "from pathlib import Path; from alos.contracts import CanonicalContractCatalog; root=Path('/contracts'); CanonicalContractCatalog(root); assert (root/'VERSION').is_file()"
+          docker run --rm --entrypoint python genesis-ai:h1-validation -c \
+            "from pathlib import Path; from genesis.contracts import CanonicalContractCatalog; root=Path('/contracts'); CanonicalContractCatalog(root); assert (root/'VERSION').is_file()"
 
       - name: Validasi seluruh Compose file
         shell: bash
@@ -51,6 +113,9 @@ jobs:
               .services.genesis.networks.edge == null and
               .services.genesis.networks.data == null and
               .services.genesis.environment.DATABASE_URL == null and
+              .services.genesis.environment.ALOS_CONTRACTS_PATH == "/contracts" and
+              .services.backend.environment.ALOS_CONTRACTS_PATH == "/contracts" and
+              (.services.backend.environment.CORS_ALLOWED_ORIGINS | length) > 0 and
               .services.genesis.depends_on.postgres == null and
               .services.postgres.ports == null and
               .services.web.networks.internal == null and
@@ -89,7 +154,8 @@ jobs:
           ! grep -Eiq 'genesis|8100' reverse-proxy/caddy/Caddyfile
           ! grep -RInE --exclude='.env.example' --exclude='*.md' --exclude-dir='.git' \
             '^[[:space:]]*(POSTGRES_PASSWORD|GENESIS_INTERNAL_TOKEN)=.+' .
-          ! grep -RIl --exclude-dir='.git' -- 'BEGIN .*PRIVATE KEY' .
+          private_key_pattern='BEGIN .*PRIVATE'' KEY'
+          ! grep -RIl --exclude-dir='.git' -- "$private_key_pattern" .
 
       - name: Pastikan CI tidak melakukan deployment
         run: test ! -e .github/workflows/deploy.yml

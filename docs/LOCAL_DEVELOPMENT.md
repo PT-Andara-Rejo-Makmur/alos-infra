@@ -2,8 +2,9 @@
 
 ## 1. Siapkan workspace
 
-Pastikan `alos-backend`, `genesis-ai`, dan `alos-web` berada sejajar dengan `alos-infra` dan setiap
-repository memiliki Dockerfile yang valid.
+Pastikan `alos-contracts`, `alos-backend`, `genesis-ai`, dan `alos-web` berada sejajar dengan
+`alos-infra` dan setiap repository aplikasi memiliki Dockerfile yang valid. Docker harus
+mendukung BuildKit named build context.
 
 ## 2. Siapkan environment
 
@@ -26,7 +27,10 @@ docker compose up --build -d
 docker compose ps
 ```
 
-Build pertama dapat memerlukan waktu karena tiga sibling application image dibuat.
+Build pertama dapat memerlukan waktu karena tiga sibling application image dibuat. Compose
+memberikan `alos-contracts` sebagai named build context kepada ketiganya. Backend dan GENESIS
+membundel schema/events canonical ke `/contracts`, sedangkan Web memakai generated TypeScript
+hanya pada build stage.
 
 ## 4. Periksa health
 
@@ -51,9 +55,10 @@ Buka `http://127.0.0.1:3000`. Backend tersedia di `http://127.0.0.1:8000`. Port 
 `.env`. Karena `NEXT_PUBLIC_*` biasanya dibundel ketika image Web dibangun, lakukan rebuild Web
 setelah mengganti Backend public URL.
 
-UI memanggil Backend, lalu Backend memanggil GENESIS melalui network `internal`. Compose me-mount
-sibling `alos-contracts` secara read-only ke `/contracts` agar Backend dapat memvalidasi respons
-diagnostic. Uji jalur lengkap tanpa membuka port GENESIS:
+UI memanggil Backend, lalu Backend memanggil GENESIS melalui network `internal`. Selain contract
+yang sudah dibundel ke image, local Compose me-mount sibling `alos-contracts` secara read-only ke
+`/contracts` agar perubahan contract lokal dapat diuji tanpa membuat state contract lain. Uji
+jalur lengkap tanpa membuka port GENESIS:
 
 ```bash
 curl -i -H "X-Correlation-ID: corr_local_001" \

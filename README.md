@@ -30,7 +30,8 @@ host port. Browser berkomunikasi dengan Backend melalui public Backend hostname,
 - Git
 - Docker Engine dengan Docker Compose v2
 - Bash untuk script Unix atau PowerShell 7 untuk script Windows
-- Sibling repository dengan Dockerfile yang dapat dibangun
+- Sibling repository `alos-contracts`, `alos-backend`, `genesis-ai`, dan `alos-web`
+- Docker BuildKit/buildx yang mendukung named build context
 
 ## Layout workspace
 
@@ -44,7 +45,8 @@ alos-workspace/
 ```
 
 Local Compose dijalankan dari `alos-infra/environments/local/` dan build context menunjuk ke
-repository sibling. Nama folder tersebut harus dipertahankan atau path Compose perlu disesuaikan.
+repository sibling. Build Backend, GENESIS, dan Web juga memakai named build context `contracts`
+dari `alos-contracts`. Nama folder tersebut harus dipertahankan atau path Compose perlu disesuaikan.
 
 ## Menjalankan local — Windows PowerShell
 
@@ -111,6 +113,10 @@ belum disediakan oleh bootstrap.
 Compose staging/production hanya menerima immutable application image melalui environment dan
 tidak menjalankan development server atau source bind mount. Operator wajib mengisi hostname,
 image digest/tag, database credential, internal token, volume/backup target, dan TLS/DNS.
+Image Backend dan GENESIS wajib dibangun dengan canonical contract yang dibundel di `/contracts`;
+image Web wajib dibangun dengan generated TypeScript dari revision contract yang sama. Release
+pipeline harus mencatat revision/tag `alos-contracts` yang dipakai dan memverifikasi
+`/contracts/VERSION` sebelum image dipromosikan.
 
 Validasi sebelum deployment:
 
@@ -118,7 +124,8 @@ Validasi sebelum deployment:
 docker compose --env-file .env -f compose.yaml config --quiet
 ```
 
-CI bootstrap hanya memvalidasi konfigurasi; CI tidak melakukan deployment.
+CI memvalidasi Compose/Caddy/script, membangun ketiga application image dengan contract context,
+dan memeriksa contract catalog pada runtime image. CI tidak melakukan deployment.
 
 ## Rollback dan recovery
 
