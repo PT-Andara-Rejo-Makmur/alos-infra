@@ -87,10 +87,7 @@ services:
       OTEL_SERVICE_NAME: genesis-ai-production
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     expose: ["8100"]
-    networks: [internal, data]
-    depends_on:
-      postgres:
-        condition: service_healthy
+    networks: [internal]
     read_only: true
     tmpfs: [/tmp]
     healthcheck:

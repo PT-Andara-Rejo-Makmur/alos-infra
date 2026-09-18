@@ -16,10 +16,10 @@ Internet
  Caddy --------> alos-web
    |
    +-----------> alos-backend --------> genesis-ai
-                         |                  |
-                         +---- internal ----+
-                                  |
-                              PostgreSQL
+                         |              (internal network)
+                         |
+                         +-----------> PostgreSQL
+                                       (data network)
 ```
 
 Hanya Caddy yang menjadi ingress staging/production. GENESIS dan PostgreSQL tidak menerbitkan
@@ -96,12 +96,15 @@ boundary, OpenTelemetry, image reference, dan hostname Caddy. Lihat file example
 ## Database
 
 Infra memiliki PostgreSQL server/container, pgvector availability, volume, healthcheck, backup,
-dan restore tooling. `alos-backend` dan `genesis-ai` tetap memiliki schema serta migration sesuai
-ownership masing-masing. Tidak ada application migration pada repository ini.
+dan restore tooling. `alos-backend` memiliki schema serta migration authoritative business state.
+GENESIS tidak memperoleh route atau credential database bisnis pada baseline ini. Persistence AI
+di masa depan harus memakai ownership dan boundary terpisah melalui keputusan arsitektur eksplisit.
+Tidak ada application migration pada repository ini.
 
-Backup lokal/manual menghasilkan custom-format `pg_dump`. Restore memerlukan konfirmasi eksplisit,
-database target, dan verification setelah restore. Provider, retention scheduler, encryption key,
-off-site copy, dan immutable storage belum disediakan oleh bootstrap.
+Backup lokal/manual menghasilkan custom-format `pg_dump` beserta sidecar SHA-256. Restore
+memverifikasi checksum terlebih dahulu, memerlukan konfirmasi eksplisit, dan menjalankan verification
+setelah restore. Provider, retention scheduler, encryption key, off-site copy, dan immutable storage
+belum disediakan oleh bootstrap.
 
 ## Staging dan production
 
@@ -131,7 +134,7 @@ Runbook: [Deploy](runbooks/deploy.md), [Rollback](runbooks/rollback.md),
 ## Keamanan dan observability
 
 - Caddy adalah satu-satunya ingress staging/production.
-- GENESIS dan PostgreSQL hanya berada pada network internal.
+- GENESIS hanya berada pada network `internal`; PostgreSQL hanya berada pada network `data`.
 - Frontend tidak menerima GENESIS URL atau internal token.
 - Backend menjadi satu-satunya application caller ke GENESIS.
 - OTLP receiver hanya tersedia pada internal network.
@@ -142,4 +145,5 @@ Runbook: [Deploy](runbooks/deploy.md), [Rollback](runbooks/rollback.md),
 Lihat [Arsitektur](ARCHITECTURE.md), [Local Development](docs/LOCAL_DEVELOPMENT.md),
 [Networking](docs/NETWORKING.md), [Database](docs/DATABASE.md),
 [Observability](docs/OBSERVABILITY.md), [Backup/Restore](docs/BACKUP_RESTORE.md), dan
-[Struktur Folder](docs/FOLDER_STRUCTURE.md).
+[Struktur Folder](docs/FOLDER_STRUCTURE.md). Keputusan adaptasi terhadap konfigurasi MVP-1 dicatat
+di [Migrasi Infrastruktur MVP-1](docs/MVP1_INFRA_MIGRATION.md).

@@ -2,20 +2,23 @@
 
 ## Backup
 
-Script menggunakan `pg_dump --format=custom`, menyalin file keluar container, dan memastikan file
-tidak kosong. Jalankan:
+Script menggunakan `pg_dump --format=custom`, menyalin file keluar container, memastikan file
+tidak kosong, lalu menulis sidecar `<backup>.sha256`. Jalankan:
 
 ```bash
 bash database/backup/backup.sh
 ```
 
-atau `database/backup/backup.ps1`. Setelah backup, operator masih harus membuat checksum,
-encrypt bila diperlukan, menyalin ke off-site storage, menerapkan retention, dan mencatat evidence.
+atau `database/backup/backup.ps1`. Simpan dump dan sidecar bersama-sama. Operator masih harus
+encrypt bila diperlukan, menyalin keduanya ke off-site storage, menerapkan retention, dan mencatat
+evidence.
 
 ## Restore
 
 Restore menggunakan `pg_restore --clean --if-exists` dan bersifat destructive terhadap target.
-Script menolak berjalan tanpa `CONFIRM_DATABASE_RESTORE=YES` dan backup file eksplisit.
+Script menolak berjalan tanpa `CONFIRM_DATABASE_RESTORE=YES`, backup file eksplisit, sidecar
+SHA-256 yang sesuai, dan checksum yang valid. Checksum hanya membuktikan integritas file; approval,
+compatibility review, serta isolated restore drill tetap wajib sebelum production restore.
 
 Restore test harus dilakukan pada isolated environment, lalu diverifikasi melalui query database,
 extension, migration state, application invariants, health, dan critical user journey. Catat durasi

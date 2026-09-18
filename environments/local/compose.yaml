@@ -5,6 +5,8 @@ services:
     build:
       context: ../../../alos-web
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
     environment:
       NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
     ports:
@@ -32,11 +34,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       GENESIS_BASE_URL: http://genesis:8100
       GENESIS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN}
+      ALOS_CONTRACTS_PATH: /contracts
+      ENABLE_TEST_TOOLS: "true"
       OTEL_SERVICE_NAME: alos-backend
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     ports:
       - "127.0.0.1:${ALOS_BACKEND_PORT:-8000}:8000"
     networks: [edge, internal, data]
+    volumes:
+      - ../../../alos-contracts:/contracts:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,13 +64,13 @@ services:
       APP_PORT: 8100
       ALOS_BACKEND_BASE_URL: http://backend:8000
       ALOS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN}
+      ALOS_CONTRACTS_PATH: /contracts
       OTEL_SERVICE_NAME: genesis-ai
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     expose: ["8100"]
-    networks: [internal, data]
-    depends_on:
-      postgres:
-        condition: service_healthy
+    networks: [internal]
+    volumes:
+      - ../../../alos-contracts:/contracts:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
       interval: 10s

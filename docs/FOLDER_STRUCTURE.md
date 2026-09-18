@@ -14,8 +14,8 @@
 - `database/postgres/`: server/container boundary dan pgvector extension initialization.
 - `database/pgvector/`: extension ownership dan larangan application index definition di Infra.
 - `database/tenant/`: tenant/data-role isolation boundary.
-- `database/backup/`: guarded Bash/PowerShell backup scripts.
-- `database/restore/`: confirmation-gated Bash/PowerShell restore scripts.
+- `database/backup/`: guarded Bash/PowerShell backup dan checksum sidecar.
+- `database/restore/`: checksum-verified, confirmation-gated Bash/PowerShell restore scripts.
 - `object-storage/`: configuration-only integration boundary; tidak ada MinIO/service.
 - `observability/otel/`: OTLP receiver, processors, dan baseline debug exporter.
 - `security/secrets/`: secret injection/rotation rules.

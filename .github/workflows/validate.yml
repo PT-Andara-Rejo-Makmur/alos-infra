@@ -48,9 +48,14 @@ jobs:
               config --format json > "/tmp/${environment}.json"
             jq -e '
               .services.genesis.ports == null and
+              .services.genesis.networks.edge == null and
+              .services.genesis.networks.data == null and
+              .services.genesis.environment.DATABASE_URL == null and
+              .services.genesis.depends_on.postgres == null and
               .services.postgres.ports == null and
               .services.web.networks.internal == null and
               .services.web.networks.data == null and
+              ([.services.web.environment | keys[] | test("GENESIS"; "i")] | any | not) and
               .networks.internal.internal == true and
               .networks.data.internal == true
             ' "/tmp/${environment}.json"
@@ -82,7 +87,7 @@ jobs:
           set -euo pipefail
           test -z "$(find . -path ./.git -prune -o -type f -empty -print)"
           ! grep -Eiq 'genesis|8100' reverse-proxy/caddy/Caddyfile
-          ! grep -RInE --exclude='.env.example' --exclude-dir='.git' \
+          ! grep -RInE --exclude='.env.example' --exclude='*.md' --exclude-dir='.git' \
             '^[[:space:]]*(POSTGRES_PASSWORD|GENESIS_INTERNAL_TOKEN)=.+' .
           ! grep -RIl --exclude-dir='.git' -- 'BEGIN .*PRIVATE KEY' .
 

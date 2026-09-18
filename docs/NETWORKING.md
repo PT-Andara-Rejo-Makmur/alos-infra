@@ -12,10 +12,11 @@ Tidak ada route untuk GENESIS, PostgreSQL, atau OTLP.
 
 ## Internal dan data
 
-Backend dan GENESIS berada di `internal`; OTEL Collector juga berada di network ini. Backend dan
-GENESIS dapat berada di `data` untuk persistence responsibility, tetapi credential/schema harus
-dipisahkan sesuai ownership. PostgreSQL hanya berada di `data`. Kedua network ditandai
-`internal: true`.
+Backend dan GENESIS berada di `internal`; OTEL Collector juga berada di network ini. Hanya Backend
+yang berada di `data`; PostgreSQL juga hanya berada di `data`. Karena itu GENESIS tidak memiliki
+route network langsung ke database bisnis. Jika GENESIS memerlukan persistence runtime/reference
+di masa depan, gunakan database dan network terpisah melalui keputusan arsitektur eksplisit.
+Kedua network ditandai `internal: true`.
 
 Local Web/Backend dipublish ke `127.0.0.1`, bukan semua host interface. GENESIS/PostgreSQL hanya
 menggunakan `expose`, yang tidak menerbitkan host port.

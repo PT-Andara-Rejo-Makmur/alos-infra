@@ -12,12 +12,13 @@ permission policy, AI orchestration, atau release decision.
 public ingress: Internet -> Caddy
 edge network:   Caddy <-> Web / Backend
 internal:       Backend <-> GENESIS / OpenTelemetry
-data network:   Backend / GENESIS <-> PostgreSQL
+data network:   Backend <-> PostgreSQL
 ```
 
 Network `internal` dan `data` menggunakan `internal: true`. GENESIS, PostgreSQL, dan OTLP tidak
-memiliki `ports` pada staging/production. Web hanya menerima public Backend URL dan tidak menjadi
-anggota network internal/data.
+memiliki `ports` pada staging/production. GENESIS tidak menjadi anggota network `data`, sehingga
+tidak memiliki jalur network ke PostgreSQL pada bootstrap ini. Web hanya menerima public Backend
+URL dan tidak menjadi anggota network internal/data.
 
 ## Environment strategy
 

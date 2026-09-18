@@ -72,10 +72,7 @@ services:
       OTEL_SERVICE_NAME: genesis-ai-staging
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     expose: ["8100"]
-    networks: [internal, data]
-    depends_on:
-      postgres:
-        condition: service_healthy
+    networks: [internal]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
       interval: 15s

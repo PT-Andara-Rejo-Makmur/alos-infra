@@ -51,6 +51,23 @@ Buka `http://127.0.0.1:3000`. Backend tersedia di `http://127.0.0.1:8000`. Port 
 `.env`. Karena `NEXT_PUBLIC_*` biasanya dibundel ketika image Web dibangun, lakukan rebuild Web
 setelah mengganti Backend public URL.
 
+UI memanggil Backend, lalu Backend memanggil GENESIS melalui network `internal`. Compose me-mount
+sibling `alos-contracts` secara read-only ke `/contracts` agar Backend dapat memvalidasi respons
+diagnostic. Uji jalur lengkap tanpa membuka port GENESIS:
+
+```bash
+curl -i -H "X-Correlation-ID: corr_local_001" \
+  http://127.0.0.1:8000/api/v1/system/integration
+```
+
+Header respons, `correlation_id` top-level, dan `genesis.correlation_id` harus bernilai
+`corr_local_001`. GENESIS dan PostgreSQL tetap tidak dipublikasikan ke host.
+
+`NEXT_PUBLIC_ALOS_API_BASE_URL` dipasang sebagai Docker build argument agar browser bundle hanya
+mengenal URL Backend publik. Backend mengizinkan origin Web lokal melalui `CORS_ALLOWED_ORIGINS`;
+operator harus mengganti keduanya bersama-sama untuk host staging/production, lalu menjalankan
+`docker compose up --build -d web`. Tidak ada URL GENESIS yang boleh masuk ke environment Web.
+
 ## Logs dan stop
 
 ```bash

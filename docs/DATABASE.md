@@ -11,12 +11,15 @@
 
 ## Ownership aplikasi
 
-Backend dan GENESIS memiliki schema, migration, data lifecycle, compatibility, dan validation
-sesuai domain. Infra tidak menyimpan Alembic migration atau application DDL/table definition.
+Backend memiliki schema, migration, data lifecycle, compatibility, dan validation untuk
+authoritative business domain. GENESIS tidak memiliki jalur network maupun credential ke database
+bisnis pada bootstrap ini. Infra tidak menyimpan Alembic migration atau application DDL/table
+definition.
 
-Untuk shared server, buat role/database terpisah. GENESIS tidak boleh memperoleh credential ke
-authoritative business schema. Production operator perlu menetapkan sizing, connection limits,
-HA, patching, encryption, maintenance, retention, dan RPO/RTO.
+Jika GENESIS kelak memerlukan persistence runtime/reference, gunakan role/database dan network
+terpisah melalui perubahan arsitektur eksplisit; jangan sambungkan ke database bisnis. Production
+operator perlu menetapkan sizing, connection limits, HA, patching, encryption, maintenance,
+retention, dan RPO/RTO.
 
 Compose membentuk `DATABASE_URL` dari variable PostgreSQL. Gunakan password yang telah di-URL
 encode bila mengandung karakter khusus, atau migrasikan aplikasi ke secret-file/component
