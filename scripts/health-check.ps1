@@ -16,7 +16,7 @@ function Test-HttpHealth {
     param([string]$Name, [string]$Uri)
 
     Write-Host "Memeriksa $Name ... " -NoNewline
-    $Response = Invoke-WebRequest -Uri $Uri -TimeoutSec 5
+    $Response = Invoke-WebRequest -Uri $Uri -TimeoutSec 5 -UseBasicParsing
     if ($Response.StatusCode -lt 200 -or $Response.StatusCode -ge 400) {
         throw "$Name mengembalikan HTTP $($Response.StatusCode)."
     }
