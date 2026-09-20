@@ -11,6 +11,7 @@ services:
         NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
     environment:
       NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
+      ALOS_BACKEND_INTERNAL_URL: http://backend:8000
     ports:
       - "127.0.0.1:${ALOS_WEB_PORT:-3000}:3000"
     networks: [edge]
