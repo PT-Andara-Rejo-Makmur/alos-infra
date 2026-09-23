@@ -1,0 +1,107 @@
+name: Integrasi Backend dan GENESIS
+
+on:
+  pull_request:
+  push:
+    branches: [development]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_DB: alos_integration
+      POSTGRES_USER: alos
+      POSTGRES_PASSWORD: integration-${{ github.run_id }}-${{ github.run_attempt }}
+      GENESIS_INTERNAL_TOKEN: service-${{ github.run_id }}-${{ github.run_attempt }}
+      ALOS_BACKEND_PORT: "8000"
+    defaults:
+      run:
+        working-directory: workspace/alos-infra
+    steps:
+      - name: Checkout Infra development
+        uses: actions/checkout@v4
+        with:
+          path: workspace/alos-infra
+
+      - name: Checkout Contracts development
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/alos-contracts
+          ref: development
+          path: workspace/alos-contracts
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Checkout Backend development
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/alos-backend
+          ref: development
+          path: workspace/alos-backend
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Checkout GENESIS development
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/genesis-ai
+          ref: development
+          path: workspace/genesis-ai
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Validasi topology integration
+        run: |
+          set -euo pipefail
+          docker compose \
+            --env-file environments/integration/.env.example \
+            -f environments/integration/compose.yaml \
+            config --format json > /tmp/integration.json
+          jq -e '
+            .services.genesis.ports == null and
+            .services.genesis.networks.data == null and
+            .services.genesis.environment.DATABASE_URL == null and
+            .services.postgres.ports == null and
+            .services.backend.environment.ALOS_CONTRACTS_PATH == "/contracts" and
+            .services.genesis.environment.ALOS_CONTRACTS_PATH == "/contracts"
+          ' /tmp/integration.json
+
+      - name: Build dan jalankan stack bersih
+        run: |
+          set -euo pipefail
+          docker compose \
+            --env-file environments/integration/.env.example \
+            -f environments/integration/compose.yaml \
+            up --build --detach --wait
+
+      - name: Jalankan integration smoke
+        run: python3 scripts/integration-smoke.py
+
+      - name: Verifikasi persistence authoritative
+        run: |
+          set -euo pipefail
+          compose=(docker compose --env-file environments/integration/.env.example -f environments/integration/compose.yaml)
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.agent_runs WHERE status = 'COMPLETED' AND input_tokens > 0;")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.agent_runs WHERE status = 'CANCELLED';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.agent_run_steps WHERE status = 'SUCCEEDED';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM evidence.evidence_refs WHERE validation_status = 'VALID';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM research.research_findings;")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM research.research_recommendations;")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.backlog_candidates WHERE approval_state = 'DRAFT';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM core.review_packages;")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM core.registry_definitions WHERE subject_id = 'agent.runtime.diagnostic' AND version = '1.0.0';")" = t
+
+      - name: Verifikasi container tetap sehat
+        run: |
+          set -euo pipefail
+          test "$(docker inspect --format '{{.State.Health.Status}}' alos-integration-backend-1)" = healthy
+          test "$(docker inspect --format '{{.State.Health.Status}}' alos-integration-genesis-1)" = healthy
+          test "$(docker inspect --format '{{.State.Health.Status}}' alos-integration-postgres-1)" = healthy
+
+      - name: Simpan log saat gagal
+        if: failure()
+        run: docker compose --env-file environments/integration/.env.example -f environments/integration/compose.yaml logs
+
+      - name: Hentikan stack
+        if: always()
+        run: docker compose --env-file environments/integration/.env.example -f environments/integration/compose.yaml down --volumes
