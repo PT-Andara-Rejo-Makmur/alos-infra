@@ -183,7 +183,7 @@ def main() -> int:
                 run_id = current["run_id"]
                 break
             except urllib.error.HTTPError as exc:
-                if exc.code >= 500:
+                if exc.code == 404:
                     time.sleep(0.1)
                     continue
                 raise
