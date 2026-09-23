@@ -79,9 +79,9 @@ Infra supplies `ALOS_BACKEND_INTERNAL_URL=http://backend:8000` to the Web runtim
 GENESIS remains unreachable from Web and no authorization decision is performed in
 the BFF.
 
-## Remaining limitation
+## Superseded limitation
 
-The current Backend token has no canonical expiry/refresh metadata. The Web cookie is
-therefore a browser-session cookie and is cleared explicitly on logout or after a
-Backend `401`. Token rotation and refresh remain a future identity-contract concern;
-they are not required for this gate.
+The token limitation recorded by this 2026-09-20 gate has been closed by the canonical identity
+foundation. Backend sessions now have persisted issue/expiry/revocation state, expose canonical
+expiry metadata through `whoami`, and are revoked on Web logout. Refresh-token rotation remains a
+separate future capability; it is not used or implied by the current opaque-session contract.

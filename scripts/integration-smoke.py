@@ -9,9 +9,11 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from http.cookiejar import CookieJar
 from urllib.parse import quote
 
 BASE_URL = "http://127.0.0.1:8000"
+WEB_BASE_URL = "http://127.0.0.1:3000"
 CORRELATION_ID = "corr_integration_stack_001"
 
 
@@ -21,6 +23,7 @@ def request(
     payload: dict | None = None,
     token: str | None = None,
     correlation_id: str = CORRELATION_ID,
+    method: str | None = None,
 ) -> dict:
     headers = {"X-Correlation-ID": correlation_id}
     if payload is not None:
@@ -31,10 +34,32 @@ def request(
         f"{BASE_URL}{path}",
         data=json.dumps(payload).encode() if payload is not None else None,
         headers=headers,
-        method="POST" if payload is not None else "GET",
+        method=method or ("POST" if payload is not None else "GET"),
     )
     with urllib.request.urlopen(operation, timeout=30) as response:
         return json.load(response)
+
+
+def web_request(
+    opener: urllib.request.OpenerDirector,
+    path: str,
+    *,
+    payload: dict | None = None,
+    method: str | None = None,
+) -> tuple[int, object]:
+    headers = {"X-Correlation-ID": CORRELATION_ID}
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    operation = urllib.request.Request(
+        f"{WEB_BASE_URL}{path}",
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers=headers,
+        method=method or ("POST" if payload is not None else "GET"),
+    )
+    with opener.open(operation, timeout=30) as response:
+        content_type = response.headers.get("content-type", "")
+        body: object = json.load(response) if "application/json" in content_type else response.read()
+        return response.status, body
 
 
 def expect_denied(path: str, payload: dict, token: str) -> None:
@@ -55,12 +80,56 @@ def main() -> int:
         "tenant_id": "tenant_integration_001",
         "organization_id": "org_integration_001",
         "workspace_id": "workspace_integration_001",
-        "roles": ["integration_runner"],
-        "permissions": ["tools.diagnostic.execute", "research.request"],
-        "scopes": ["scope.diagnostic", "research.technology"],
+        "workspace_key": "it",
+        "workspace_name": "Integration IT Workspace",
+        "workspace_type": "IT_OPERATIONS",
+        "division_code": "IT",
+        "role_refs": ["IT_ADMIN"],
+        "permission_refs": ["tools.diagnostic.execute", "research.request"],
+        "scope_refs": ["scope.diagnostic", "research.technology"],
         "data_scope": "COMPANY",
     }
     request("/api/v1/auth/register", payload=registration)
+
+    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+    status, web_login = web_request(
+        browser,
+        "/api/session/login",
+        payload={"email": registration["email"], "password": registration["password"]},
+    )
+    assert status == 200
+    assert isinstance(web_login, dict) and web_login["authenticated"] is True
+    status, session = web_request(browser, "/api/session")
+    assert status == 200
+    assert isinstance(session, dict)
+    assert session["principal"]["actor"]["tenant_id"] == registration["tenant_id"]
+    status, workspaces = web_request(browser, "/api/backend/api/v1/workspaces")
+    assert status == 200
+    assert isinstance(workspaces, list) and len(workspaces) == 1
+    assert workspaces[0]["workspace"]["workspace_id"] == registration["workspace_id"]
+    status, selected = web_request(
+        browser,
+        "/api/backend/api/v1/auth/active-workspace",
+        payload={"workspace_id": registration["workspace_id"]},
+        method="PUT",
+    )
+    assert status == 200
+    assert isinstance(selected, dict)
+    assert selected["workspace"]["workspace_id"] == registration["workspace_id"]
+    status, protected_page = web_request(browser, "/workspace/it")
+    assert status == 200 and isinstance(protected_page, bytes)
+    try:
+        web_request(
+            browser,
+            "/api/backend/api/v1/auth/active-workspace",
+            payload={"workspace_id": "workspace_unauthorized_001"},
+            method="PUT",
+        )
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 403
+    else:
+        raise AssertionError("Unauthorized workspace selection was not denied")
+
     login = request(
         "/api/v1/auth/login",
         payload={"email": registration["email"], "password": registration["password"]},
@@ -186,7 +255,7 @@ def main() -> int:
                     "version": "1.0.0",
                     "name": "Runtime Diagnostic",
                     "purpose": "Validate the governed Backend and GENESIS runtime boundary.",
-                    "owner": login["principal"]["actor_id"],
+                    "owner": login["principal"]["actor"]["actor_id"],
                     "capability_type": "AGENT",
                     "output_state": "NEEDS_REVIEW",
                     "lifecycle_state": "DRAFT",
@@ -243,9 +312,19 @@ def main() -> int:
         {**run, "scope_refs": ["scope.admin"]},
         token,
     )
-    print("Backend-GENESIS deterministic integration passed")
+    print("Web-Backend-GENESIS deterministic integration passed")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except urllib.error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="replace")
+        correlation_id = exc.headers.get("x-correlation-id", "missing")
+        print(
+            f"Integration HTTP failure: {exc.code} {exc.geturl()} "
+            f"(correlation_id={correlation_id})\n{response_body}",
+            file=sys.stderr,
+        )
+        raise

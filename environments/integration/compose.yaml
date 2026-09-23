@@ -1,6 +1,31 @@
 name: alos-integration
 
 services:
+  web:
+    build:
+      context: ../../../alos-web
+      dockerfile: Dockerfile
+      additional_contexts:
+        contracts: ../../../alos-contracts
+      args:
+        NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
+    environment:
+      NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
+      ALOS_BACKEND_INTERNAL_URL: http://backend:8000
+      ALOS_SESSION_COOKIE_SECURE: "false"
+    ports:
+      - "127.0.0.1:${ALOS_WEB_PORT:-3000}:3000"
+    networks: [edge]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   backend:
     build:
       context: ../../../alos-backend
@@ -15,10 +40,11 @@ services:
       GENESIS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN:?}
       ALOS_CONTRACTS_PATH: /contracts
       ENABLE_TEST_TOOLS: "true"
+      ENABLE_TEST_REGISTRATION: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     ports:
       - "127.0.0.1:${ALOS_BACKEND_PORT:-8000}:8000"
-    networks: [internal, data]
+    networks: [edge, internal, data]
     volumes:
       - ../../../alos-contracts:/contracts:ro
     depends_on:
@@ -81,6 +107,8 @@ services:
       - ../../observability/otel/collector-config.yaml:/etc/otelcol/config.yaml:ro
 
 networks:
+  edge:
   internal:
+    internal: true
   data:
     internal: true

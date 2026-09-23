@@ -17,6 +17,7 @@ jobs:
       POSTGRES_PASSWORD: integration-${{ github.run_id }}-${{ github.run_attempt }}
       GENESIS_INTERNAL_TOKEN: service-${{ github.run_id }}-${{ github.run_attempt }}
       ALOS_BACKEND_PORT: "8000"
+      ALOS_WEB_PORT: "3000"
     defaults:
       run:
         working-directory: workspace/alos-infra
@@ -50,6 +51,14 @@ jobs:
           path: workspace/genesis-ai
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
+      - name: Checkout Web development
+        uses: actions/checkout@v4
+        with:
+          repository: PT-Andara-Rejo-Makmur/alos-web
+          ref: development
+          path: workspace/alos-web
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
       - name: Validasi topology integration
         run: |
           set -euo pipefail
@@ -58,6 +67,9 @@ jobs:
             -f environments/integration/compose.yaml \
             config --format json > /tmp/integration.json
           jq -e '
+            (.services.web.networks | keys) == ["edge"] and
+            .services.web.environment.ALOS_BACKEND_INTERNAL_URL == "http://backend:8000" and
+            .services.web.environment.NEXT_PUBLIC_GENESIS_BASE_URL == null and
             .services.genesis.ports == null and
             .services.genesis.networks.data == null and
             .services.genesis.environment.DATABASE_URL == null and
@@ -97,6 +109,7 @@ jobs:
           test "$(docker inspect --format '{{.State.Health.Status}}' alos-integration-backend-1)" = healthy
           test "$(docker inspect --format '{{.State.Health.Status}}' alos-integration-genesis-1)" = healthy
           test "$(docker inspect --format '{{.State.Health.Status}}' alos-integration-postgres-1)" = healthy
+          test "$(docker inspect --format '{{.State.Health.Status}}' alos-integration-web-1)" = healthy
 
       - name: Simpan log saat gagal
         if: failure()
