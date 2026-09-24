@@ -13,11 +13,19 @@ checkout, and telemetry collector.
 
 ## Smoke proof
 
-`scripts/integration-smoke.py` provisions a canonical IT test account through the explicitly gated
-development bootstrap, then verifies login through the Web session boundary, whoami, workspace
+`scripts/integration-smoke.py` provisions canonical test identities through the explicitly gated
+development bootstrap. It verifies login through the Web session boundary, whoami, workspace
 listing, active-workspace selection, protected page loading, and denial of an unauthorized
-workspace. It then executes the existing governed Backend-to-GENESIS runtime, cancellation,
-Factory, research, review, and authority-expansion negative cases.
+workspace.
+
+The same smoke also creates a multi-workspace actor and proves that login does not select a hidden
+default, an explicit selection keeps the same actor and exposes the selected workspace's role,
+revocation clears the active context, and the revoked workspace cannot be selected again. Negative
+coverage rejects cross-organization account provisioning, client-supplied tenant authority, and a
+cross-organization membership assignment.
+
+After the identity boundary checks, the smoke executes the existing governed Backend-to-GENESIS
+runtime, cancellation, Factory, research, review, and authority-expansion negative cases.
 
 The integration compose enables test registration and deterministic runtime tools only in this
 non-production environment. It uses generated run-specific CI secrets and never production secrets.

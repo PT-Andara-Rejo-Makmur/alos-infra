@@ -37,6 +37,8 @@ def request(
         method=method or ("POST" if payload is not None else "GET"),
     )
     with urllib.request.urlopen(operation, timeout=30) as response:
+        if response.status == 204:
+            return {}
         return json.load(response)
 
 
@@ -62,11 +64,18 @@ def web_request(
         return response.status, body
 
 
-def expect_denied(path: str, payload: dict, token: str) -> None:
+def expect_denied(
+    path: str,
+    payload: dict | None,
+    token: str,
+    *,
+    method: str | None = None,
+    expected_statuses: set[int] | None = None,
+) -> None:
     try:
-        request(path, payload=payload, token=token)
+        request(path, payload=payload, token=token, method=method)
     except urllib.error.HTTPError as exc:
-        if exc.code not in {403, 422}:
+        if exc.code not in (expected_statuses or {403, 422}):
             raise
     else:
         raise AssertionError("Authority expansion was not denied")
@@ -85,11 +94,43 @@ def main() -> int:
         "workspace_type": "IT_OPERATIONS",
         "division_code": "IT",
         "role_refs": ["IT_ADMIN"],
-        "permission_refs": ["tools.diagnostic.execute", "research.request"],
+        "permission_refs": [
+            "tools.diagnostic.execute",
+            "research.request",
+            "identity.accounts.manage",
+            "identity.memberships.read",
+            "identity.memberships.manage",
+        ],
         "scope_refs": ["scope.diagnostic", "research.technology"],
         "data_scope": "COMPANY",
     }
     request("/api/v1/auth/register", payload=registration)
+
+    beta_registration = {
+        **registration,
+        "email": "integration-beta-owner@alos.test",
+        "display_name": "Integration Beta Owner",
+        "workspace_id": "workspace_integration_002",
+        "workspace_key": "it-beta",
+        "workspace_name": "Integration IT Workspace Beta",
+        "role_refs": ["WORKSPACE_MEMBER"],
+        "permission_refs": [],
+    }
+    request("/api/v1/auth/register", payload=beta_registration)
+
+    foreign_registration = {
+        **registration,
+        "email": "integration-foreign@alos.test",
+        "display_name": "Foreign Organization Actor",
+        "tenant_id": "tenant_integration_foreign",
+        "organization_id": "org_integration_foreign",
+        "workspace_id": "workspace_integration_foreign",
+        "workspace_key": "foreign",
+        "workspace_name": "Foreign Organization Workspace",
+        "role_refs": ["WORKSPACE_MEMBER"],
+        "permission_refs": [],
+    }
+    foreign_actor = request("/api/v1/auth/register", payload=foreign_registration)
 
     browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
     status, web_login = web_request(
@@ -135,6 +176,128 @@ def main() -> int:
         payload={"email": registration["email"], "password": registration["password"]},
     )
     token = login["access_token"]
+    multi_account = request(
+        "/api/v1/identity/accounts",
+        payload={
+            "email": "integration-multi@alos.test",
+            "password": "integration-password",
+            "display_name": "Multi Workspace Actor",
+            "workspace_id": registration["workspace_id"],
+            "role_refs": ["WORKSPACE_MEMBER"],
+            "permission_refs": ["tools.diagnostic.execute"],
+            "scope_refs": ["scope.diagnostic"],
+            "data_scope": "WORKSPACE",
+        },
+        token=token,
+    )
+    multi_actor_id = multi_account["actor"]["actor_id"]
+    request(
+        f"/api/v1/identity/actors/{multi_actor_id}/memberships",
+        payload={
+            "workspace_id": beta_registration["workspace_id"],
+            "role_refs": ["WORKSPACE_LEAD"],
+            "permission_refs": ["tools.diagnostic.execute"],
+            "scope_refs": ["scope.diagnostic"],
+            "data_scope": "WORKSPACE",
+        },
+        token=token,
+    )
+
+    multi_login = request(
+        "/api/v1/auth/login",
+        payload={"email": "integration-multi@alos.test", "password": "integration-password"},
+        correlation_id="corr_multi_workspace_login",
+    )
+    multi_token = multi_login["access_token"]
+    assert multi_login["principal"]["actor"]["actor_id"] == multi_actor_id
+    assert multi_login["principal"]["active_workspace"] is None
+    expect_denied(
+        "/api/v1/genesis/context-options",
+        None,
+        multi_token,
+        expected_statuses={403},
+    )
+    selected_beta = request(
+        "/api/v1/auth/active-workspace",
+        payload={"workspace_id": beta_registration["workspace_id"]},
+        token=multi_token,
+        method="PUT",
+        correlation_id="corr_multi_workspace_select",
+    )
+    assert selected_beta["actor_id"] == multi_actor_id
+    assert selected_beta["workspace"]["workspace_id"] == beta_registration["workspace_id"]
+    assert selected_beta["membership"]["role_refs"] == ["WORKSPACE_LEAD"]
+    multi_whoami = request("/api/v1/auth/whoami", token=multi_token)
+    assert multi_whoami["actor"]["actor_id"] == multi_actor_id
+    assert multi_whoami["active_workspace"]["workspace"]["workspace_id"] == beta_registration["workspace_id"]
+    assert multi_whoami["active_workspace"]["role_refs"] == ["WORKSPACE_LEAD"]
+    protected_context = request("/api/v1/genesis/context-options", token=multi_token)
+    assert protected_context["actor_id"] == multi_actor_id
+    assert protected_context["workspace_id"] == beta_registration["workspace_id"]
+
+    expect_denied(
+        "/api/v1/auth/active-workspace",
+        {"workspace_id": foreign_registration["workspace_id"]},
+        multi_token,
+        method="PUT",
+        expected_statuses={403},
+    )
+    expect_denied(
+        "/api/v1/identity/accounts",
+        {
+            "email": "cross-org@alos.test",
+            "password": "integration-password",
+            "display_name": "Cross Organization Attempt",
+            "workspace_id": foreign_registration["workspace_id"],
+            "role_refs": ["WORKSPACE_MEMBER"],
+        },
+        token,
+        expected_statuses={403},
+    )
+    expect_denied(
+        "/api/v1/identity/accounts",
+        {
+            "email": "cross-tenant@alos.test",
+            "password": "integration-password",
+            "display_name": "Cross Tenant Attempt",
+            "workspace_id": registration["workspace_id"],
+            "role_refs": ["WORKSPACE_MEMBER"],
+            "tenant_id": foreign_registration["tenant_id"],
+        },
+        token,
+        expected_statuses={422},
+    )
+    expect_denied(
+        f"/api/v1/identity/actors/{foreign_actor['actor']['actor_id']}/memberships",
+        {
+            "workspace_id": registration["workspace_id"],
+            "role_refs": ["WORKSPACE_MEMBER"],
+        },
+        token,
+        expected_statuses={403, 404},
+    )
+    request(
+        f"/api/v1/identity/actors/{multi_actor_id}/memberships/{beta_registration['workspace_id']}",
+        token=token,
+        method="DELETE",
+    )
+    revoked_whoami = request("/api/v1/auth/whoami", token=multi_token)
+    assert revoked_whoami["actor"]["actor_id"] == multi_actor_id
+    assert revoked_whoami["active_workspace"] is None
+    expect_denied(
+        "/api/v1/genesis/context-options",
+        None,
+        multi_token,
+        expected_statuses={403},
+    )
+    expect_denied(
+        "/api/v1/auth/active-workspace",
+        {"workspace_id": beta_registration["workspace_id"]},
+        multi_token,
+        method="PUT",
+        expected_statuses={403},
+    )
+
     bootstrap = request("/api/v1/integration/bootstrap", payload={}, token=token)
     run = {
         "agent_id": bootstrap["agent_id"],
