@@ -306,12 +306,6 @@ def main() -> int:
         "input": {"message": "integration roundtrip"},
         "requested_tool_ids": ["diagnostic.echo"],
         "scope_refs": ["scope.diagnostic"],
-        "execution_budget": {
-            "max_tokens": 100,
-            "max_steps": 3,
-            "max_tool_calls": 1,
-            "timeout_seconds": 10,
-        },
         "execution_mode": "TEST",
     }
     result = request("/api/v1/agent-runs", payload=run, token=token)
