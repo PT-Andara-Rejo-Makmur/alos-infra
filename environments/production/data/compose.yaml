@@ -1,0 +1,33 @@
+name: alos-production-data
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB wajib diisi}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER wajib diisi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi}
+    ports:
+      - "${POSTGRES_BIND_IP:?POSTGRES_BIND_IP wajib diisi}:${POSTGRES_PORT:-5432}:5432"
+    expose: ["5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../../../database/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 1m
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 4G
+
+volumes:
+  postgres-data:

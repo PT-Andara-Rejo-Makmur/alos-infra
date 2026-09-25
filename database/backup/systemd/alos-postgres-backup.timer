@@ -1,0 +1,13 @@
+[Unit]
+Description=Trigger ALOS PostgreSQL Backup Daily at 02:00 UTC
+RefuseManualStart=no
+RefuseManualStop=no
+
+[Timer]
+# Run every day at 02:00:00 UTC
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

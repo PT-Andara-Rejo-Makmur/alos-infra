@@ -1,0 +1,36 @@
+name: alos-production-genesis
+
+services:
+  genesis:
+    image: ${GENESIS_IMAGE:?Gunakan immutable GENESIS_IMAGE}
+    environment:
+      APP_ENV: production
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8100
+      ALOS_BACKEND_BASE_URL: "${ALOS_BACKEND_BASE_URL:?ALOS_BACKEND_BASE_URL wajib diisi}"
+      ALOS_INTERNAL_TOKEN: ${ALOS_INTERNAL_TOKEN:?ALOS_INTERNAL_TOKEN wajib diisi}
+      ALOS_CONTRACTS_PATH: /contracts
+      DEFAULT_MODEL_ROUTE: disabled
+      OTEL_SERVICE_NAME: genesis-ai-production
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "${GENESIS_BIND_IP:?GENESIS_BIND_IP wajib diisi}:${GENESIS_PORT:-8100}:8100"
+    expose: ["8100"]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 4G

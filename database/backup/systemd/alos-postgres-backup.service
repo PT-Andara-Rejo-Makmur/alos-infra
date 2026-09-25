@@ -1,0 +1,21 @@
+[Unit]
+Description=ALOS PostgreSQL Automated Daily Backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=deployer
+Group=deployer
+WorkingDirectory=/opt/alos/alos-infra
+EnvironmentFile=-/etc/alos/production/data.env
+ExecStart=/bin/bash /opt/alos/alos-infra/database/backup/backup.sh /opt/alos/alos-infra/environments/production/data/compose.yaml
+ExecStartPost=/bin/bash /opt/alos/alos-infra/database/backup/retention.sh --backup-dir /opt/alos/backups --daily-keep 7
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

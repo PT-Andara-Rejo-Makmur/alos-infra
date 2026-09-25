@@ -20,14 +20,21 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   web:
     image: ${ALOS_WEB_IMAGE:?ALOS_WEB_IMAGE wajib diisi}
     environment:
+      NODE_ENV: production
       NEXT_PUBLIC_ALOS_API_BASE_URL: https://${API_HOSTNAME}
       ALOS_BACKEND_INTERNAL_URL: http://backend:8000
     expose: ["3000"]
     networks: [edge]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
@@ -35,6 +42,11 @@ services:
       retries: 8
       start_period: 20s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
 
   backend:
     image: ${ALOS_BACKEND_IMAGE:?ALOS_BACKEND_IMAGE wajib diisi}
@@ -56,6 +68,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 15s
@@ -63,6 +79,11 @@ services:
       retries: 8
       start_period: 30s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1.5G
 
   genesis:
     image: ${GENESIS_IMAGE:?GENESIS_IMAGE wajib diisi}
@@ -73,10 +94,15 @@ services:
       ALOS_BACKEND_BASE_URL: http://backend:8000
       ALOS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN:?GENESIS_INTERNAL_TOKEN wajib diisi}
       ALOS_CONTRACTS_PATH: /contracts
+      DEFAULT_MODEL_ROUTE: disabled
       OTEL_SERVICE_NAME: genesis-ai-staging
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     expose: ["8100"]
     networks: [internal]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
       interval: 15s
@@ -84,6 +110,11 @@ services:
       retries: 8
       start_period: 30s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 2G
 
   postgres:
     image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
@@ -103,6 +134,14 @@ services:
       retries: 10
       start_period: 20s
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 1m
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 2G
 
   otel-collector:
     image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:0.135.0}
@@ -111,6 +150,8 @@ services:
     networks: [internal]
     volumes:
       - ../../observability/otel/collector-config.yaml:/etc/otelcol/config.yaml:ro
+    read_only: true
+    tmpfs: [/tmp]
     restart: unless-stopped
 
 networks:

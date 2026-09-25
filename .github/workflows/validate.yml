@@ -3,7 +3,7 @@ name: Validasi Infrastruktur
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, development]
 
 permissions:
   contents: read
@@ -16,8 +16,15 @@ env:
   POSTGRES_USER: alos_validation
   POSTGRES_PASSWORD: ci
   GENESIS_INTERNAL_TOKEN: ci
+  ALOS_INTERNAL_TOKEN: ci
   WEB_HOSTNAME: web.example.invalid
   API_HOSTNAME: api.example.invalid
+  DATABASE_PRIVATE_HOST: 10.0.0.3
+  GENESIS_PRIVATE_HOST: 10.0.0.2
+  ALOS_BACKEND_BASE_URL: http://10.0.0.1:8000
+  APP_PRIVATE_BIND_IP: 10.0.0.1
+  GENESIS_BIND_IP: 10.0.0.2
+  POSTGRES_BIND_IP: 10.0.0.3
 
 jobs:
   validate:
@@ -92,41 +99,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for environment in local staging production; do
-            docker compose \
-              --env-file "environments/${environment}/.env.example" \
-              -f "environments/${environment}/compose.yaml" \
-              config --quiet
-          done
+          docker compose --env-file environments/local/.env.example -f environments/local/compose.yaml config --quiet
+          docker compose --env-file environments/staging/.env.example -f environments/staging/compose.yaml config --quiet
+          docker compose --env-file environments/production/app/.env.example -f environments/production/app/compose.yaml config --quiet
+          docker compose --env-file environments/production/genesis/.env.example -f environments/production/genesis/compose.yaml config --quiet
+          docker compose --env-file environments/production/data/.env.example -f environments/production/data/compose.yaml config --quiet
 
-      - name: Validasi topology network
+      - name: Validasi topology network & regression 4 VPS
         shell: bash
         run: |
           set -euo pipefail
-          for environment in local staging production; do
-            docker compose \
-              --env-file "environments/${environment}/.env.example" \
-              -f "environments/${environment}/compose.yaml" \
-              config --format json > "/tmp/${environment}.json"
-            jq -e '
-              .services.genesis.ports == null and
-              .services.genesis.networks.edge == null and
-              .services.genesis.networks.data == null and
-              .services.genesis.environment.DATABASE_URL == null and
-              .services.genesis.environment.ALOS_CONTRACTS_PATH == "/contracts" and
-              .services.backend.environment.ALOS_CONTRACTS_PATH == "/contracts" and
-              (.services.backend.environment.CORS_ALLOWED_ORIGINS | length) > 0 and
-              .services.genesis.depends_on.postgres == null and
-              .services.postgres.ports == null and
-              .services.web.networks.internal == null and
-              .services.web.networks.data == null and
-              ([.services.web.environment | keys[] | test("GENESIS"; "i")] | any | not) and
-              .networks.internal.internal == true and
-              .networks.data.internal == true
-            ' "/tmp/${environment}.json"
-          done
-          jq -e '[.services[] | has("build")] | any | not' /tmp/production.json
-          jq -e '[.services[] | (.command // []) | tostring | test("dev|reload"; "i")] | any | not' /tmp/production.json
+          python3 scripts/verify-infra-topology.py
 
       - name: Validasi Caddyfile
         run: >-
@@ -143,8 +126,17 @@ jobs:
           set -euo pipefail
           bash -n scripts/health-check.sh
           bash -n database/backup/backup.sh
+          bash -n database/backup/retention.sh
           bash -n database/restore/restore.sh
+          bash -n database/migration/migrate.sh
           pwsh -NoProfile -Command '$errors = @(); Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { $tokens = $null; $parseErrors = $null; [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null; $errors += $parseErrors }; if ($errors.Count) { $errors | Format-List; exit 1 }'
+          python3 -m py_compile scripts/verify-infra-topology.py scripts/preflight-check.py scripts/test-restore-proof.py
+
+      - name: Uji automated restore proof pada disposable PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/test-restore-proof.py
 
       - name: Validasi file dan boundary
         shell: bash

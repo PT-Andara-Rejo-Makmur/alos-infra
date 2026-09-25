@@ -1,32 +1,37 @@
 # Struktur Folder
 
 - `environments/local/`: Compose build sibling repository, loopback Web/Backend, dan example env.
-- `environments/staging/`: registry-image Compose dengan Caddy ingress dan environment staging.
-- `environments/production/`: production-only image Compose, guard resource, read-only app, dan
-  operator-required configuration.
+- `environments/staging/`: registry-image Compose 1 VPS full-stack dengan Caddy ingress, isolasi named volume, dan environment staging.
+- `environments/production/`: konfigurasi terdistribusi multi-host 3 VPS:
+  - `app/`: VPS 1 APP (Caddy, Web, Backend) dengan public ingress.
+  - `genesis/`: VPS 2 GENESIS (genesis-ai) terisolasi tanpa route database.
+  - `data/`: VPS 3 DATA (PostgreSQL + pgvector, named volume persistence).
 - `services/web/`, `backend/`, `genesis/`: runtime ownership dan network boundary tiap service.
-- `docker/`: shared Docker convention boundary; saat ini application Dockerfile tetap dimiliki
-  repository aplikasi.
+- `docker/`: shared Docker convention boundary; application Dockerfile tetap dimiliki repository aplikasi.
 - `networking/ingress/`: public ingress policy Caddy.
 - `networking/internal/`: internal/data network rules.
-- `networking/firewall/`: provider-neutral firewall baseline.
+- `networking/firewall/`: provider-neutral firewall baseline dan panduan iptables/UFW per VPS.
 - `reverse-proxy/caddy/`: Caddyfile Web/API tanpa GENESIS route.
 - `database/postgres/`: server/container boundary dan pgvector extension initialization.
 - `database/pgvector/`: extension ownership dan larangan application index definition di Infra.
 - `database/tenant/`: tenant/data-role isolation boundary.
-- `database/backup/`: guarded Bash/PowerShell backup dan checksum sidecar.
+- `database/backup/`: guarded Bash/PowerShell backup dan checksum sidecar, mendukung target multi-host.
 - `database/restore/`: checksum-verified, confirmation-gated Bash/PowerShell restore scripts.
 - `object-storage/`: configuration-only integration boundary; tidak ada MinIO/service.
 - `observability/otel/`: OTLP receiver, processors, dan baseline debug exporter.
-- `security/secrets/`: secret injection/rotation rules.
+- `security/secrets/`: secret injection/rotation rules per-node role.
 - `security/tls/`: Caddy TLS dan operator responsibility.
 - `security/policies/`: invariant keamanan deployment.
-- `deployment/preflight/`: checklist sebelum perubahan environment.
+- `deployment/preflight/`: checklist dan skrip validasi sebelum perubahan environment.
 - `deployment/staging/`: boundary deployment staging.
-- `deployment/production/`: boundary deployment production dan larangan bootstrap auto-deploy.
-- `rollback/`: application rollback boundary.
+- `deployment/production/`: boundary deployment production terdistribusi dan urutan rilis aman.
+- `rollback/`: application rollback boundary terpisah dari database recovery.
 - `recovery/`: controlled recovery dan gap RPO/RTO/provider.
 - `runbooks/`: deploy, rollback, restore, degraded service, dan incident procedure.
-- `scripts/`: health check Web, Backend, internal GENESIS, dan PostgreSQL untuk Bash/PowerShell.
-- `docs/`: instalasi, environment operation, networking, database, observability, serta recovery.
-- `.github/`: config validation CI, CODEOWNERS, dan pull request checklist.
+- `scripts/`:
+  - `health-check.sh` & `health-check.ps1`: health check multi-target (`local`, `app`, `genesis`, `data`, `staging`).
+  - `preflight-check.py`: validasi kesiapan konfigurasi dan invariant secret sebelum deploy.
+  - `verify-infra-topology.py`: regression suite 15 invariant topologi multi-host 4 VPS.
+  - `integration-smoke.py`: public deterministic stack integration smoke test.
+- `docs/`: dokumentasi instalasi, multi-host deployment, networking authority matrix, database, serta recovery.
+- `.github/`: config validation CI multi-compose, CODEOWNERS, dan pull request checklist.
