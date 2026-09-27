@@ -81,6 +81,209 @@ def expect_denied(
         raise AssertionError("Authority expansion was not denied")
 
 
+def strategy_smoke() -> None:
+    """Prove the deterministic Strategy cascade through a fresh persisted session."""
+    executive = {
+        "email": "strategy-executive@alos.test",
+        "password": "integration-password",
+        "display_name": "Strategy Integration Executive",
+        "tenant_id": "tenant_integration_001",
+        "organization_id": "org_integration_001",
+        "workspace_id": "workspace_strategy_executive",
+        "workspace_key": "strategy-executive",
+        "workspace_name": "Strategy Executive Workspace",
+        "workspace_type": "EXECUTIVE",
+        "role_refs": ["EXECUTIVE", "BUSINESS_REVIEWER"],
+        "permission_refs": [
+            "strategy.read",
+            "strategy.company.manage",
+            "strategy.review",
+            "strategy.approve",
+            "strategy.activate",
+        ],
+        "scope_refs": ["scope.strategy"],
+        "data_scope": "COMPANY",
+    }
+    request("/api/v1/auth/register", payload=executive)
+    unrelated = {
+        **executive,
+        "email": "strategy-unrelated@alos.test",
+        "display_name": "Unrelated Strategy Workspace",
+        "workspace_id": "workspace_strategy_unrelated",
+        "workspace_key": "strategy-unrelated",
+        "workspace_name": "Unrelated Strategy Workspace",
+        "workspace_type": "BUSINESS",
+        "role_refs": ["WORKSPACE_MEMBER"],
+        "permission_refs": ["strategy.read"],
+        "data_scope": "WORKSPACE",
+    }
+    request("/api/v1/auth/register", payload=unrelated)
+    executive_login = request(
+        "/api/v1/auth/login",
+        payload={"email": executive["email"], "password": executive["password"]},
+        correlation_id="corr_strategy_login_001",
+    )
+    unrelated_login = request(
+        "/api/v1/auth/login",
+        payload={"email": unrelated["email"], "password": unrelated["password"]},
+        correlation_id="corr_strategy_unrelated_login_001",
+    )
+    token = executive_login["access_token"]
+    unrelated_token = unrelated_login["access_token"]
+    period = {
+        "granularity": "ANNUAL",
+        "starts_at": "2027-01-01",
+        "ends_at": "2027-12-31",
+    }
+    plan_id = "plan.integration.rkap.2027"
+    root_target_id = "target.integration.corporate.akad"
+    derived_target_id = "target.integration.sales.leads"
+    plan = request(
+        "/api/v1/strategy/plans",
+        payload={
+            "plan_id": plan_id,
+            "version": 1,
+            "plan_type": "OPERATING_PLAN",
+            "name": "RKAP 2027 Integration Proof",
+            "owner_workspace_id": executive["workspace_id"],
+            "owner_role_ref": "EXECUTIVE",
+            "period": period,
+            "scope": {"type": "COMPANY", "ref": None},
+            "materiality": "MATERIAL",
+            "source_refs": ["source:integration-rkap"],
+            "evidence_refs": ["evidence:integration-rkap"],
+        },
+        token=token,
+        correlation_id="corr_strategy_plan_001",
+    )
+    assert plan["lifecycle_state"] == "DRAFT"
+    root_target = {
+        "target_id": root_target_id,
+        "version": 1,
+        "code": "KPI-INTEGRATION-AKAD",
+        "name": "Integration corporate akad target",
+        "plan_ref": {"id": plan_id, "version": 1},
+        "objective_ref": None,
+        "metric_code": "KPI-INTEGRATION-AKAD",
+        "scope": {"type": "COMPANY", "ref": None},
+        "period": period,
+        "measurement_type": "CUMULATIVE",
+        "unit": "COUNT",
+        "owner_workspace_id": executive["workspace_id"],
+        "owner_role_ref": "EXECUTIVE",
+        "materiality": "MATERIAL",
+        "source_refs": ["source:integration-rkap"],
+        "evidence_refs": ["evidence:integration-rkap"],
+    }
+    request(
+        "/api/v1/strategy/targets",
+        payload=root_target,
+        token=token,
+        correlation_id="corr_strategy_target_001",
+    )
+    request(
+        f"/api/v1/strategy/targets/{root_target_id}/observations",
+        payload={
+            "observation_id": "observation.integration.corporate.akad",
+            "target_id": root_target_id,
+            "target_version": 1,
+            "kind": "TARGET",
+            "value": 7,
+            "unit": "COUNT",
+            "period": period,
+            "source_ref": "evidence:integration-rkap",
+            "source_mode": "MANUAL_EVIDENCED",
+            "observed_at": "2026-09-27T00:00:00Z",
+            "verified_at": "2026-09-27T00:01:00Z",
+            "verification_state": "VERIFIED",
+            "evidence_refs": ["evidence:integration-rkap"],
+        },
+        token=token,
+        correlation_id="corr_strategy_observation_001",
+    )
+    preview = request(
+        "/api/v1/strategy/cascade/preview",
+        payload={
+            "root_target_ref": {"target_id": root_target_id, "version": 1},
+            "rules": [
+                {
+                    "cascade_rule_id": "rule.integration.required-leads",
+                    "rule_type": "RATIO_DIVIDE_CEIL",
+                    "input_target_refs": [{"target_id": root_target_id, "version": 1}],
+                    "output_target_refs": [{"target_id": derived_target_id, "version": 1}],
+                    "parameters": {},
+                }
+            ],
+            "rule_inputs": {"rule.integration.required-leads": {"input": 7, "ratio": 0.3}},
+            "assumption_refs": [],
+            "constraints": [
+                {
+                    "constraint_id": "constraint.integration.capacity",
+                    "constraint_type": "CAPACITY",
+                    "critical": True,
+                    "required_value": 24,
+                    "available_value": 24,
+                    "applies": True,
+                }
+            ],
+        },
+        token=token,
+        correlation_id="corr_strategy_preview_001",
+    )
+    assert preview["status"] == "VALID"
+    assert preview["calculation_trace"][0]["output"] == "24"
+    assert preview["calculation_trace"][0]["rounding_mode"] == "CEILING"
+    assert preview["constraint_results"][0]["result"] == "PASS"
+    targets_after_preview = request("/api/v1/strategy/targets", token=token)
+    assert [item["target_id"] for item in targets_after_preview] == [root_target_id]
+
+    derived_target = {
+        **root_target,
+        "target_id": derived_target_id,
+        "code": "KPI-INTEGRATION-LEADS",
+        "name": "Integration derived sales lead target",
+        "scope": {"type": "DIVISION", "ref": "workspace_strategy_sales"},
+        "owner_workspace_id": "workspace_strategy_sales",
+        "owner_role_ref": "WORKSPACE_LEAD",
+    }
+    accepted = request(
+        f"/api/v1/strategy/cascade-runs/{preview['cascade_run_id']}/accept",
+        payload={"derived_targets": [derived_target]},
+        token=token,
+        correlation_id="corr_strategy_accept_001",
+    )
+    assert accepted["status"] == "ACCEPTED"
+    accepted_target = request(f"/api/v1/strategy/targets/{derived_target_id}", token=token)
+    assert accepted_target["target"]["lifecycle_state"] == "DRAFT"
+    assert accepted_target["target"]["cascade_run_id"] == preview["cascade_run_id"]
+
+    submitted = request(f"/api/v1/strategy/plans/{plan_id}/submit", payload={}, token=token)
+    assert submitted["lifecycle_state"] == "UNDER_REVIEW"
+    approved = request(f"/api/v1/strategy/plans/{plan_id}/approve", payload={}, token=token)
+    assert approved["lifecycle_state"] == "APPROVED"
+    activated = request(f"/api/v1/strategy/plans/{plan_id}/activate", payload={}, token=token)
+    assert activated["lifecycle_state"] == "ACTIVE"
+
+    fresh_login = request(
+        "/api/v1/auth/login",
+        payload={"email": executive["email"], "password": executive["password"]},
+        correlation_id="corr_strategy_fresh_session_001",
+    )
+    fresh_token = fresh_login["access_token"]
+    persisted_plan = request(f"/api/v1/strategy/plans/{plan_id}", token=fresh_token)
+    persisted_target = request(
+        f"/api/v1/strategy/targets/{derived_target_id}", token=fresh_token
+    )
+    assert persisted_plan["lifecycle_state"] == "ACTIVE"
+    assert persisted_target["target"]["lifecycle_state"] == "ACTIVE"
+    expect_denied(
+        f"/api/v1/strategy/targets/{derived_target_id}",
+        None,
+        unrelated_token,
+        expected_statuses={403},
+    )
+
+
 def main() -> int:
     registration = {
         "email": "integration@alos.test",
@@ -298,6 +501,8 @@ def main() -> int:
         expected_statuses={403},
     )
 
+    strategy_smoke()
+
     bootstrap = request("/api/v1/integration/bootstrap", payload={}, token=token)
     run = {
         "agent_id": bootstrap["agent_id"],
@@ -469,7 +674,7 @@ def main() -> int:
         {**run, "scope_refs": ["scope.admin"]},
         token,
     )
-    print("Web-Backend-GENESIS deterministic integration passed")
+    print("Web-Backend-PostgreSQL-GENESIS deterministic integration passed")
     return 0
 
 

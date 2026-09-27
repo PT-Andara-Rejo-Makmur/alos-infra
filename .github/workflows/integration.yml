@@ -102,6 +102,9 @@ jobs:
           test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.backlog_candidates WHERE approval_state = 'DRAFT';")" = t
           test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM core.review_packages;")" = t
           test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM core.registry_definitions WHERE subject_id = 'agent.runtime.diagnostic' AND version = '1.0.0';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) = 1 FROM strategy.plans WHERE plan_id = 'plan.integration.rkap.2027' AND lifecycle_state = 'ACTIVE';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) = 1 FROM strategy.targets WHERE target_id = 'target.integration.sales.leads' AND lifecycle_state = 'ACTIVE';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) = 1 FROM strategy.cascade_runs WHERE status = 'ACCEPTED';")" = t
 
       - name: Verifikasi container tetap sehat
         run: |

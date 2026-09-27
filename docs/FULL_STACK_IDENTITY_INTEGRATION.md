@@ -27,5 +27,12 @@ cross-organization membership assignment.
 After the identity boundary checks, the smoke executes the existing governed Backend-to-GENESIS
 runtime, cancellation, Factory, research, review, and authority-expansion negative cases.
 
+The smoke also proves the Stage 2 Strategy boundary without involving GENESIS in calculation. It
+authenticates a test-only Executive, persists an RKAP and evidenced target, previews and accepts a
+Decimal `RATIO_DIVIDE_CEIL` cascade, activates the reviewed plan, reads the active plan and derived
+target through a fresh session, and verifies an unrelated workspace is denied. CI then checks the
+`strategy.plans`, `strategy.targets`, and `strategy.cascade_runs` rows directly in PostgreSQL. The
+identifiers are deterministic and the stack uses a clean disposable integration volume.
+
 The integration compose enables test registration and deterministic runtime tools only in this
 non-production environment. It uses generated run-specific CI secrets and never production secrets.
