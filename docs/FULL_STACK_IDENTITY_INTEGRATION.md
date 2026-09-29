@@ -27,7 +27,7 @@ cross-organization membership assignment.
 After the identity boundary checks, the smoke executes the existing governed Backend-to-GENESIS
 runtime, cancellation, Factory, research, review, and authority-expansion negative cases.
 
-The smoke also proves the Stage 2 Strategy boundary without involving GENESIS in calculation. It
+The smoke also proves the Strategy boundary without involving GENESIS in calculation. It
 authenticates a test-only Executive, persists an RKAP and evidenced target, previews and accepts a
 Decimal `RATIO_DIVIDE_CEIL` cascade, activates the reviewed plan, reads the active plan and derived
 target through a fresh session, and verifies an unrelated workspace is denied. CI then checks the

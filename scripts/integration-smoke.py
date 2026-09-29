@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from http.cookiejar import CookieJar
 from urllib.parse import quote
 
-BASE_URL = "http://127.0.0.1:8000"
-WEB_BASE_URL = "http://127.0.0.1:3000"
+BASE_URL = os.environ.get("ALOS_INTEGRATION_BACKEND_URL", "http://127.0.0.1:8000")
+WEB_BASE_URL = os.environ.get("ALOS_INTEGRATION_WEB_URL", "http://127.0.0.1:3000")
 CORRELATION_ID = "corr_integration_stack_001"
 
 
@@ -93,7 +93,7 @@ def strategy_smoke() -> None:
         "workspace_key": "strategy-executive",
         "workspace_name": "Strategy Executive Workspace",
         "workspace_type": "EXECUTIVE",
-        "role_refs": ["EXECUTIVE", "BUSINESS_REVIEWER"],
+        "role_refs": ["EXECUTIVE"],
         "permission_refs": [
             "strategy.read",
             "strategy.company.manage",
@@ -113,7 +113,7 @@ def strategy_smoke() -> None:
         "workspace_key": "strategy-unrelated",
         "workspace_name": "Unrelated Strategy Workspace",
         "workspace_type": "BUSINESS",
-        "role_refs": ["WORKSPACE_MEMBER"],
+        "role_refs": ["DIVISION_MEMBER"],
         "permission_refs": ["strategy.read"],
         "data_scope": "WORKSPACE",
     }
@@ -244,7 +244,7 @@ def strategy_smoke() -> None:
         "name": "Integration derived sales lead target",
         "scope": {"type": "DIVISION", "ref": "workspace_strategy_sales"},
         "owner_workspace_id": "workspace_strategy_sales",
-        "owner_role_ref": "WORKSPACE_LEAD",
+        "owner_role_ref": "DIVISION_LEAD",
     }
     accepted = request(
         f"/api/v1/strategy/cascade-runs/{preview['cascade_run_id']}/accept",
@@ -316,7 +316,7 @@ def main() -> int:
         "workspace_id": "workspace_integration_002",
         "workspace_key": "it-beta",
         "workspace_name": "Integration IT Workspace Beta",
-        "role_refs": ["WORKSPACE_MEMBER"],
+        "role_refs": ["DIVISION_MEMBER"],
         "permission_refs": [],
     }
     request("/api/v1/auth/register", payload=beta_registration)
@@ -330,7 +330,7 @@ def main() -> int:
         "workspace_id": "workspace_integration_foreign",
         "workspace_key": "foreign",
         "workspace_name": "Foreign Organization Workspace",
-        "role_refs": ["WORKSPACE_MEMBER"],
+        "role_refs": ["DIVISION_MEMBER"],
         "permission_refs": [],
     }
     foreign_actor = request("/api/v1/auth/register", payload=foreign_registration)
@@ -380,28 +380,24 @@ def main() -> int:
     )
     token = login["access_token"]
     multi_account = request(
-        "/api/v1/identity/accounts",
+        "/api/v1/auth/register",
         payload={
+            **registration,
             "email": "integration-multi@alos.test",
-            "password": "integration-password",
             "display_name": "Multi Workspace Actor",
-            "workspace_id": registration["workspace_id"],
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
             "permission_refs": ["tools.diagnostic.execute"],
             "scope_refs": ["scope.diagnostic"],
             "data_scope": "WORKSPACE",
         },
-        token=token,
     )
     multi_actor_id = multi_account["actor"]["actor_id"]
     request(
         f"/api/v1/identity/actors/{multi_actor_id}/memberships",
         payload={
             "workspace_id": beta_registration["workspace_id"],
-            "role_refs": ["WORKSPACE_LEAD"],
-            "permission_refs": ["tools.diagnostic.execute"],
-            "scope_refs": ["scope.diagnostic"],
-            "data_scope": "WORKSPACE",
+            "role_refs": ["DIVISION_LEAD"],
+            "effective_at": "2026-01-01T00:00:00Z",
         },
         token=token,
     )
@@ -429,11 +425,11 @@ def main() -> int:
     )
     assert selected_beta["actor_id"] == multi_actor_id
     assert selected_beta["workspace"]["workspace_id"] == beta_registration["workspace_id"]
-    assert selected_beta["membership"]["role_refs"] == ["WORKSPACE_LEAD"]
+    assert selected_beta["membership"]["role_refs"] == ["DIVISION_LEAD"]
     multi_whoami = request("/api/v1/auth/whoami", token=multi_token)
     assert multi_whoami["actor"]["actor_id"] == multi_actor_id
     assert multi_whoami["active_workspace"]["workspace"]["workspace_id"] == beta_registration["workspace_id"]
-    assert multi_whoami["active_workspace"]["role_refs"] == ["WORKSPACE_LEAD"]
+    assert multi_whoami["active_workspace"]["role_refs"] == ["DIVISION_LEAD"]
     protected_context = request("/api/v1/genesis/context-options", token=multi_token)
     assert protected_context["actor_id"] == multi_actor_id
     assert protected_context["workspace_id"] == beta_registration["workspace_id"]
@@ -448,11 +444,11 @@ def main() -> int:
     expect_denied(
         "/api/v1/identity/accounts",
         {
+            "employee_id": "employee_foreign_attempt",
             "email": "cross-org@alos.test",
-            "password": "integration-password",
-            "display_name": "Cross Organization Attempt",
             "workspace_id": foreign_registration["workspace_id"],
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
+            "effective_at": "2026-01-01T00:00:00Z",
         },
         token,
         expected_statuses={403},
@@ -460,11 +456,11 @@ def main() -> int:
     expect_denied(
         "/api/v1/identity/accounts",
         {
+            "employee_id": "employee_foreign_attempt",
             "email": "cross-tenant@alos.test",
-            "password": "integration-password",
-            "display_name": "Cross Tenant Attempt",
             "workspace_id": registration["workspace_id"],
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
+            "effective_at": "2026-01-01T00:00:00Z",
             "tenant_id": foreign_registration["tenant_id"],
         },
         token,
@@ -474,7 +470,8 @@ def main() -> int:
         f"/api/v1/identity/actors/{foreign_actor['actor']['actor_id']}/memberships",
         {
             "workspace_id": registration["workspace_id"],
-            "role_refs": ["WORKSPACE_MEMBER"],
+            "role_refs": ["DIVISION_MEMBER"],
+            "effective_at": "2026-01-01T00:00:00Z",
         },
         token,
         expected_statuses={403, 404},
