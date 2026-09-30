@@ -42,6 +42,8 @@ services:
       ENABLE_TEST_TOOLS: "true"
       ENABLE_TEST_REGISTRATION: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      EMAIL_PROVIDER: inmemory
+      EMAIL_FROM_NAME: ALOS
     ports:
       - "127.0.0.1:${ALOS_BACKEND_PORT:-8000}:8000"
     networks: [edge, internal, data]

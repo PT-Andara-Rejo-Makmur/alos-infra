@@ -807,6 +807,22 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
         f"WHERE actor_id = '{account['actor_id']}' AND active = true AND revoked_at IS NULL;"
     ) == "t"
 
+    # Resend activation challenge for expired account
+    resend_result = request(
+        f"/api/v1/identity/actors/{expired_account['actor_id']}/activation/resend",
+        token=admin_token,
+        payload={},
+    )
+    assert resend_result["activation_state"] == "PENDING"
+    assert resend_result["actor_id"] == expired_account["actor_id"]
+    resent_credential = activation_credential(expired_email)
+    resent_hash = hashlib.sha256(resent_credential.encode()).hexdigest()
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.activation_challenges "
+        f"WHERE challenge_id = 'activation_{expired_account['actor_id']}' "
+        f"AND token_hash = '{resent_hash}' AND expires_at > now();"
+    ) == "t"
+
     suspended = request(
         f"/api/v1/identity/actors/{account['actor_id']}/suspend",
         token=admin_token,
@@ -835,6 +851,76 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
         payload={"email": email, "password": "EmployeePass!123"},
         code="INVALID_CREDENTIALS",
     )
+
+    # Reactivate the account
+    reactivated = request(
+        f"/api/v1/identity/actors/{account['actor_id']}/activate",
+        token=admin_token,
+        payload={"reason": "Integration reactivation"},
+    )
+    assert reactivated == {"actor_id": account["actor_id"], "active": True}
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.auth_accounts "
+        f"WHERE actor_id = '{account['actor_id']}' "
+        "AND active = true AND administrative_state = 'ENABLED';"
+    ) == "t"
+
+    # Login works again after reactivation
+    status, reactivated_login = web_request(
+        employee_browser,
+        "/api/session/login",
+        payload={"email": email, "password": "EmployeePass!123"},
+    )
+    assert status == 200 and isinstance(reactivated_login, dict) and reactivated_login["authenticated"] is True
+
+    # Password reset flow
+    status, reset_request = web_request(
+        employee_browser,
+        "/api/session/password-reset/request",
+        payload={"email": email},
+    )
+    assert status == 200
+    assert "Jika email terdaftar" in reset_request.get("message", "")
+    assert postgres_sql(
+        "SELECT count(*) >= 1 FROM core.password_reset_challenges "
+        f"WHERE account_id = '{account['actor_id']}' AND consumed_at IS NULL;"
+    ) == "t"
+
+    reset_token = activation_credential(email)
+    new_password = "NewEmployeePass!456"
+    status, reset_confirm = web_request(
+        employee_browser,
+        "/api/session/password-reset/confirm",
+        payload={
+            "token": reset_token,
+            "password": new_password,
+            "password_confirmation": new_password,
+        },
+    )
+    assert status == 200
+    assert "Kata sandi berhasil diperbarui" in reset_confirm.get("message", "")
+    assert postgres_sql(
+        "SELECT count(*) >= 1 FROM core.password_reset_challenges "
+        f"WHERE account_id = '{account['actor_id']}' AND consumed_at IS NOT NULL;"
+    ) == "t"
+
+    # Old password fails
+    expect_web_error(
+        employee_browser,
+        "/api/session/login",
+        401,
+        payload={"email": email, "password": "EmployeePass!123"},
+        code="INVALID_CREDENTIALS",
+    )
+
+    # Login with new password succeeds
+    status, new_login = web_request(
+        employee_browser,
+        "/api/session/login",
+        payload={"email": email, "password": new_password},
+    )
+    assert status == 200 and isinstance(new_login, dict) and new_login["authenticated"] is True
+
 
 
 def main() -> int:
