@@ -170,7 +170,8 @@ def shared_work_smoke() -> None:
         "approval.approve", "document.read", "document.create", "document.version",
         "document.review", "document.approve", "report.read", "report.create",
         "report.review", "finding.read", "finding.create", "finding.update",
-        "finding.verify",
+        "finding.verify", "work.evidence.link", "work.comment.create",
+        "work.relation.link", "work.checklist.manage",
     ]
     owner, owner_id = actor("shared-owner@alos.test", owner_permissions)
     reviewer, reviewer_id = actor(
@@ -195,11 +196,15 @@ def shared_work_smoke() -> None:
     )
     project_id = project["project_id"]
     assert project["status"] == "PLANNED"
+    assert project["owner_actor_id"] == owner_id
+    members = request("/api/v1/workspace-members", token=owner)
+    assert {member["actor_id"] for member in members} >= {owner_id, reviewer_id}
     task = request(
         "/api/v1/tasks", token=owner,
         payload={"title": "Shared Work Task", "project_id": project_id},
     )
     task_id = task["task_id"]
+    assert task["project_name"] == project["name"]
     assert request(
         f"/api/v1/tasks/{task_id}/assign", token=owner,
         payload={"owner_actor_id": reviewer_id},
@@ -208,6 +213,10 @@ def shared_work_smoke() -> None:
         f"/api/v1/tasks/{task_id}/complete", token=owner, method="POST"
     )["status"] == "COMPLETED"
     assert request(f"/api/v1/tasks/{task_id}", token=owner)["status"] == "COMPLETED"
+    project = request(f"/api/v1/projects/{project_id}", token=owner)
+    assert project["progress_percentage"] == 100
+    assert project["tasks_count"] == 1
+    assert project["risk_level"] == "LOW"
     expect_denied(f"/api/v1/projects/{project_id}", None, remote, expected_statuses={404})
 
     approval = request(
@@ -215,6 +224,8 @@ def shared_work_smoke() -> None:
         payload={"subject_type": "PROJECT", "subject_id": project_id},
     )
     approval_id = approval["approval_id"]
+    assert approval["subject_title"] == project["name"]
+    assert approval["requester_name"] == "shared-owner@alos.test"
     expect_denied(
         f"/api/v1/approvals/{approval_id}/approve", {}, owner,
         expected_statuses={403},
@@ -230,9 +241,32 @@ def shared_work_smoke() -> None:
     document = request(
         "/api/v1/documents", token=owner,
         payload={"title": "Shared Work Policy", "category": "Policy",
-                 "data_classification": "INTERNAL"},
+                 "data_classification": "INTERNAL", "project_id": project_id,
+                 "description": "Authoritative document metadata",
+                 "effective_date": "2026-10-01"},
     )
     document_id = document["document_id"]
+    assert document["project_name"] == project["name"]
+    assert request(
+        f"/api/v1/documents/{document_id}/links", token=owner,
+        payload={"target_type": "TASK", "target_id": task_id},
+    )["entity_id"] == task_id
+    assert request(
+        f"/api/v1/documents/{document_id}/links", token=owner,
+        payload={"target_type": "APPROVAL", "target_id": approval_id},
+    )["entity_id"] == approval_id
+    assert request(f"/api/v1/documents/{document_id}", token=owner)["tasks_count"] == 1
+    assert request(f"/api/v1/tasks/{task_id}", token=owner)["documents_count"] == 1
+    assert request(f"/api/v1/approvals/{approval_id}", token=owner)["documents_count"] == 1
+    assert any(item["entity_id"] == document_id for item in request(
+        f"/api/v1/work/TASK/{task_id}/relations", token=owner
+    ))
+    checklist_path = f"/api/v1/work/TASK/{task_id}/checklist"
+    checklist = request(checklist_path, token=owner, payload={"body": "Inspect source"})
+    assert request(
+        f"{checklist_path}/{checklist['item_id']}/complete", token=owner, method="POST"
+    )["completed"] is True
+    assert len(request(checklist_path, token=owner)) == 1
     source_id = "source_shared_work_smoke"
     assert postgres_sql(
         "INSERT INTO core.sources "
@@ -251,6 +285,11 @@ def shared_work_smoke() -> None:
         "SELECT status FROM core.source_versions "
         "WHERE source_id='source_shared_work_smoke';"
     ) == "VERIFIED"
+    source_options = request(
+        f"/api/v1/documents/{document_id}/source-options", token=owner
+    )
+    assert {item["source_id"] for item in source_options} == {source_id}
+    assert all("storage_uri" not in item for item in source_options)
     version = request(
         f"/api/v1/documents/{document_id}/versions", token=owner,
         payload={"version": "1.0", "source_id": source_id, "source_version": "1"},
@@ -277,9 +316,25 @@ def shared_work_smoke() -> None:
         f"/api/v1/documents/{document_id}/versions", token=owner
     )[0]["content_hash"] == version["content_hash"]
 
+    definition = request(
+        "/api/v1/work/reports/definitions", token=owner,
+        payload={"name": "Operational definition", "report_type": "OPERATIONAL",
+                 "frequency": "MONTHLY", "review_required": True,
+                 "recipients": [], "sections": ["Summary"], "data_sources": []},
+    )
+    definition_id = definition["report_definition_id"]
+    assert request(
+        f"/api/v1/work/reports/definitions/{definition_id}", token=owner
+    )["name"] == "Operational definition"
+    assert request(
+        f"/api/v1/work/reports/definitions/{definition_id}", token=owner,
+        payload={"description": "Monthly result"}, method="PATCH",
+    )["description"] == "Monthly result"
     report = request(
         "/api/v1/work/reports/results", token=owner,
-        payload={"title": "Shared Work Result", "report_type": "OPERATIONAL"},
+        payload={"title": "Shared Work Result", "report_type": "OPERATIONAL",
+                 "description": "Monthly summary", "period_start": "2026-09-01",
+                 "period_end": "2026-09-30", "project_id": project_id},
     )
     report_id = report["report_id"]
     report_path = f"/api/v1/work/reports/results/{report_id}"
@@ -287,12 +342,15 @@ def shared_work_smoke() -> None:
     expect_denied(f"{report_path}/review", None, owner, method="POST", expected_statuses={403})
     expect_denied(f"{report_path}/review", None, legacy, method="POST", expected_statuses={403})
     assert request(f"{report_path}/review", token=reviewer, method="POST")["status"] == "APPROVED"
-    assert request(f"{report_path}/publish", token=publisher, method="POST")["status"] == "PUBLISHED"
+    published = request(f"{report_path}/publish", token=publisher, method="POST")
+    assert published["status"] == "PUBLISHED" and published["published_at"]
     assert request(f"{report_path}/archive", token=publisher, method="POST")["status"] == "ARCHIVED"
 
     finding = request(
         "/api/v1/work/findings", token=owner,
-        payload={"title": "Shared Work Finding", "severity": "MEDIUM"},
+        payload={"title": "Shared Work Finding", "severity": "MEDIUM",
+                 "project_id": project_id, "corrective_action_task_id": task_id,
+                 "due_date": "2026-10-30", "impact": "Service interruption"},
     )
     finding_id = finding["finding_id"]
     finding_path = f"/api/v1/work/findings/{finding_id}"
@@ -302,8 +360,45 @@ def shared_work_smoke() -> None:
     )["status"] == "PENDING_VERIFICATION"
     expect_denied(f"{finding_path}/verify", None, owner, method="POST", expected_statuses={403})
     expect_denied(f"{finding_path}/verify", None, legacy, method="POST", expected_statuses={403})
-    assert request(f"{finding_path}/verify", token=reviewer, method="POST")["status"] == "VERIFIED"
+    verified = request(f"{finding_path}/verify", token=reviewer, method="POST")
+    assert verified["status"] == "VERIFIED"
+    assert verified["verifier_actor_id"] == reviewer_id
+    assert verified["corrective_action_task_title"] == task["title"]
     assert request(f"{finding_path}/close", token=publisher, method="POST")["status"] == "CLOSED"
+
+    relations = request(f"/api/v1/projects/{project_id}/relations", token=owner)
+    assert {item["entity_type"] for item in relations} >= {
+        "TASK", "APPROVAL", "DOCUMENT", "REPORT", "FINDING",
+    }
+    evidence_id = "evidence_shared_work_smoke"
+    assert postgres_sql(
+        "INSERT INTO evidence.evidence_refs "
+        "(evidence_id,tenant_id,organization_id,workspace_id,source_id,uri,"
+        "content_hash,data_classification,validation_status,metadata_payload,captured_at) "
+        "VALUES ('evidence_shared_work_smoke','tenant_shared_work','org_shared_work',"
+        "'workspace_shared_work','source_shared_work_smoke','urn:alos:evidence:shared-work',"
+        "'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+        "'INTERNAL','VERIFIED','{}',now()); "
+        "SELECT validation_status FROM evidence.evidence_refs "
+        "WHERE evidence_id='evidence_shared_work_smoke';"
+    ) == "VERIFIED"
+    entity_path = f"/api/v1/work/PROJECT/{project_id}"
+    assert any(item["evidence_id"] == evidence_id for item in request(
+        "/api/v1/work/evidence-candidates", token=owner
+    ))
+    assert request(
+        f"{entity_path}/evidence", token=owner, payload={"evidence_id": evidence_id}
+    )["source_id"] == source_id
+    assert len(request(f"{entity_path}/evidence", token=owner)) == 1
+    assert request(f"/api/v1/projects/{project_id}", token=owner)["evidence_count"] == 1
+    assert request(
+        f"{entity_path}/comments", token=owner, payload={"body": "Verified proof"}
+    )["actor_id"] == owner_id
+    assert len(request(f"{entity_path}/comments", token=owner)) == 1
+    assert {item["event_type"] for item in request(
+        f"{entity_path}/activity", token=owner
+    )} >= {"project.created", "project.evidence_linked", "project.commented"}
+    expect_denied(f"{entity_path}/evidence", None, remote, expected_statuses={404})
 
     for resource, identifier in (
         ("projects", project_id), ("tasks", task_id),
