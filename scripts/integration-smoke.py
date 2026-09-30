@@ -2,19 +2,74 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.cookiejar import CookieJar
+from pathlib import Path
 from urllib.parse import quote
 
 BASE_URL = os.environ.get("ALOS_INTEGRATION_BACKEND_URL", "http://127.0.0.1:8000")
 WEB_BASE_URL = os.environ.get("ALOS_INTEGRATION_WEB_URL", "http://127.0.0.1:3000")
 CORRELATION_ID = "corr_integration_stack_001"
+ROOT = Path(__file__).resolve().parents[1]
+COMPOSE = (
+    "docker", "compose", "--env-file", "environments/integration/.env.example",
+    "-f", "environments/integration/compose.yaml",
+)
+
+
+def compose_output(*arguments: str) -> str:
+    result = subprocess.run(
+        [*COMPOSE, *arguments], cwd=ROOT, capture_output=True, text=True, check=True
+    )
+    return result.stdout.strip()
+
+
+def postgres_sql(statement: str) -> str:
+    return compose_output(
+        "exec", "-T", "postgres", "psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+        "-U", os.environ.get("POSTGRES_USER", "alos"),
+        "-d", os.environ.get("POSTGRES_DB", "alos_integration"),
+        "-c", statement,
+    )
+
+
+def activation_credential(email: str) -> str:
+    credential = compose_output(
+        "exec", "-T", "backend", "python", "/integration/integration_backend.py", email
+    )
+    assert len(credential) >= 20
+    return credential
+
+
+def expect_web_error(
+    opener: urllib.request.OpenerDirector,
+    path: str,
+    status: int,
+    *,
+    payload: dict | None = None,
+    code: str | None = None,
+    credential: str | None = None,
+) -> None:
+    try:
+        web_request(opener, path, payload=payload)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        assert exc.code == status
+        if code is not None:
+            assert json.loads(body)["code"] == code
+        if credential is not None:
+            assert credential not in body
+    else:
+        raise AssertionError(f"Expected Web HTTP {status} for {path}")
 
 
 def request(
@@ -284,6 +339,190 @@ def strategy_smoke() -> None:
     )
 
 
+def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
+    """Exercise employee authority through the live Web and PostgreSQL stack."""
+    workspace_id = registration["workspace_id"]
+    tenant_id = registration["tenant_id"]
+    organization_id = registration["organization_id"]
+    employee_id = "employee_integration_identity"
+    email = "identity-employee@alos.test"
+    expired_employee_id = "employee_integration_expired"
+    expired_email = "identity-expired@alos.test"
+
+    for person_id, person_email, number in (
+        (employee_id, email, "INTEGRATION-IDENTITY-001"),
+        (expired_employee_id, expired_email, "INTEGRATION-IDENTITY-002"),
+    ):
+        assert postgres_sql(
+            "INSERT INTO hr.employees "
+            "(employee_id, tenant_id, organization_id, workspace_id, actor_id, "
+            "employee_number, full_name, email, employment_status, join_date, "
+            "department_code, created_at, updated_at) VALUES "
+            f"('{person_id}', '{tenant_id}', '{organization_id}', '{workspace_id}', NULL, "
+            f"'{number}', 'Integration Employee', '{person_email}', 'ACTIVE', "
+            "CURRENT_DATE - 1, 'IT', now(), now()) RETURNING employee_id;"
+        ) == person_id
+
+    candidates = request("/api/v1/identity/provisioning-candidates", token=admin_token)
+    assert {item["employee_id"] for item in candidates} >= {employee_id, expired_employee_id}
+
+    def provision(person_id: str, person_email: str) -> dict:
+        account = request(
+            "/api/v1/identity/accounts",
+            token=admin_token,
+            payload={
+                "employee_id": person_id,
+                "email": person_email,
+                "workspace_id": workspace_id,
+                "role_refs": ["DIVISION_MEMBER"],
+                "effective_at": "2026-01-01T00:00:00Z",
+            },
+        )
+        assert account["activation_state"] == "PENDING"
+        assert re.fullmatch(r"actor_[0-9a-f]{32}", account["actor_id"])
+        assert postgres_sql(
+            "SELECT count(*) = 1 FROM core.auth_accounts "
+            f"WHERE actor_id = '{account['actor_id']}' AND activation_state = 'PENDING';"
+        ) == "t"
+        assert postgres_sql(
+            "SELECT count(*) = 1 FROM hr.employees "
+            f"WHERE employee_id = '{person_id}' AND actor_id = '{account['actor_id']}';"
+        ) == "t"
+        return account
+
+    account = provision(employee_id, email)
+    credential = activation_credential(email)
+    credential_hash = hashlib.sha256(credential.encode()).hexdigest()
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.activation_challenges "
+        f"WHERE challenge_id = 'activation_{account['actor_id']}' "
+        f"AND token_hash = '{credential_hash}' AND consumed_at IS NULL;"
+    ) == "t"
+
+    employee_cookies = CookieJar()
+    employee_browser = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(employee_cookies)
+    )
+    expect_web_error(
+        employee_browser,
+        "/api/session/login",
+        401,
+        payload={"email": email, "password": "EmployeePass!123"},
+        code="INVALID_CREDENTIALS",
+    )
+    expect_web_error(employee_browser, "/api/session", 401)
+
+    activation_payload = {
+        "token": credential,
+        "password": "EmployeePass!123",
+        "password_confirmation": "EmployeePass!123",
+    }
+    expect_web_error(
+        employee_browser,
+        "/api/session/activate",
+        422,
+        payload={**activation_payload, "token": "invalid-integration-activation-credential"},
+        code="ACTIVATION_CHALLENGE_INVALID",
+        credential="invalid-integration-activation-credential",
+    )
+
+    expired_account = provision(expired_employee_id, expired_email)
+    expired_credential = activation_credential(expired_email)
+    postgres_sql(
+        "UPDATE core.activation_challenges SET expires_at = now() - interval '1 second' "
+        f"WHERE challenge_id = 'activation_{expired_account['actor_id']}';"
+    )
+    expect_web_error(
+        employee_browser,
+        "/api/session/activate",
+        422,
+        payload={
+            "token": expired_credential,
+            "password": "ExpiredPass!123",
+            "password_confirmation": "ExpiredPass!123",
+        },
+        code="ACTIVATION_CHALLENGE_INVALID",
+        credential=expired_credential,
+    )
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.auth_accounts "
+        f"WHERE actor_id = '{expired_account['actor_id']}' AND activation_state = 'PENDING';"
+    ) == "t"
+
+    status, activation = web_request(
+        employee_browser, "/api/session/activate", payload=activation_payload
+    )
+    assert status == 200
+    assert activation == {"actor_id": account["actor_id"], "activation_state": "ACTIVATED"}
+    expect_web_error(employee_browser, "/api/session", 401)
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.activation_challenges "
+        f"WHERE challenge_id = 'activation_{account['actor_id']}' "
+        "AND consumed_at IS NOT NULL;"
+    ) == "t"
+    expect_web_error(
+        employee_browser,
+        "/api/session/activate",
+        422,
+        payload=activation_payload,
+        code="ACTIVATION_CHALLENGE_INVALID",
+        credential=credential,
+    )
+
+    status, employee_login = web_request(
+        employee_browser,
+        "/api/session/login",
+        payload={"email": email, "password": "EmployeePass!123"},
+    )
+    assert status == 200
+    assert isinstance(employee_login, dict) and employee_login["authenticated"] is True
+    session_cookie = next(
+        cookie.value for cookie in employee_cookies if cookie.name == "alos_backend_session"
+    )
+    status, session = web_request(employee_browser, "/api/session")
+    assert status == 200 and isinstance(session, dict)
+    assert session["principal"]["actor"]["actor_id"] == account["actor_id"]
+    assert session["principal"]["active_workspace"]["workspace"]["workspace_id"] == workspace_id
+    status, workspaces = web_request(employee_browser, "/api/backend/api/v1/workspaces")
+    assert status == 200 and isinstance(workspaces, list)
+    assert [item["workspace"]["workspace_id"] for item in workspaces] == [workspace_id]
+    assert workspaces[0]["role_refs"] == ["DIVISION_MEMBER"]
+    expect_web_error(employee_browser, "/api/backend/api/v1/identity/accounts", 403)
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.auth_sessions "
+        f"WHERE actor_id = '{account['actor_id']}' AND active = true AND revoked_at IS NULL;"
+    ) == "t"
+
+    suspended = request(
+        f"/api/v1/identity/actors/{account['actor_id']}/suspend",
+        token=admin_token,
+        payload={"reason": "Integration access revocation"},
+    )
+    assert suspended == {"actor_id": account["actor_id"], "active": False}
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.auth_accounts "
+        f"WHERE actor_id = '{account['actor_id']}' "
+        "AND active = false AND administrative_state = 'SUSPENDED';"
+    ) == "t"
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.auth_sessions "
+        f"WHERE actor_id = '{account['actor_id']}' AND active = false "
+        "AND revoked_at IS NOT NULL;"
+    ) == "t"
+    expect_web_error(employee_browser, "/api/session", 401)
+    expect_web_error(employee_browser, "/api/backend/api/v1/workspaces", 401)
+    expect_denied(
+        "/api/v1/auth/whoami", None, session_cookie, expected_statuses={401}
+    )
+    expect_web_error(
+        employee_browser,
+        "/api/session/login",
+        401,
+        payload={"email": email, "password": "EmployeePass!123"},
+        code="INVALID_CREDENTIALS",
+    )
+
+
 def main() -> int:
     registration = {
         "email": "integration@alos.test",
@@ -379,6 +618,7 @@ def main() -> int:
         payload={"email": registration["email"], "password": registration["password"]},
     )
     token = login["access_token"]
+    identity_lifecycle_smoke(registration, token)
     multi_account = request(
         "/api/v1/auth/register",
         payload={

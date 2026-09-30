@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PT-Andara-Rejo-Makmur/alos-contracts
-          ref: main
+          ref: ${{ github.base_ref || github.ref_name }}
           path: workspace/alos-contracts
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PT-Andara-Rejo-Makmur/alos-backend
-          ref: main
+          ref: ${{ github.base_ref || github.ref_name }}
           path: workspace/alos-backend
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PT-Andara-Rejo-Makmur/genesis-ai
-          ref: main
+          ref: ${{ github.base_ref || github.ref_name }}
           path: workspace/genesis-ai
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
@@ -66,7 +66,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PT-Andara-Rejo-Makmur/alos-web
-          ref: main
+          ref: ${{ github.base_ref || github.ref_name }}
           path: workspace/alos-web
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
 
@@ -100,6 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           docker compose --env-file environments/local/.env.example -f environments/local/compose.yaml config --quiet
+          docker compose --env-file environments/integration/.env.example -f environments/integration/compose.yaml config --quiet
           docker compose --env-file environments/staging/.env.example -f environments/staging/compose.yaml config --quiet
           docker compose --env-file environments/production/app/.env.example -f environments/production/app/compose.yaml config --quiet
           docker compose --env-file environments/production/genesis/.env.example -f environments/production/genesis/compose.yaml config --quiet

@@ -32,7 +32,7 @@ services:
       dockerfile: Dockerfile
       additional_contexts:
         contracts: ../../../alos-contracts
-    command: ["sh", "-c", "alembic upgrade head && uvicorn alos.main:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "-c", "alembic upgrade head && uvicorn integration_backend:app --app-dir /integration --host 0.0.0.0 --port 8000"]
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
@@ -47,6 +47,7 @@ services:
     networks: [edge, internal, data]
     volumes:
       - ../../../alos-contracts:/contracts:ro
+      - ../../scripts/integration_backend.py:/integration/integration_backend.py:ro
     depends_on:
       postgres:
         condition: service_healthy

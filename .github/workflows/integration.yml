@@ -25,6 +25,7 @@ jobs:
       - name: Checkout Infra development
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || 'development' }}
           path: workspace/alos-infra
 
       - name: Checkout Contracts development
@@ -58,6 +59,19 @@ jobs:
           ref: development
           path: workspace/alos-web
           token: ${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}
+
+      - name: Catat SHA sumber integration
+        run: |
+          set -euo pipefail
+          {
+            echo '| Repository | SHA yang diuji |'
+            echo '| --- | --- |'
+            for repository in alos-infra alos-contracts alos-backend alos-web genesis-ai; do
+              sha="$(git -C "../$repository" rev-parse HEAD)"
+              echo "| $repository | \`$sha\` |"
+            done
+          } | tee /tmp/alos-integration-sources.md
+          cat /tmp/alos-integration-sources.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validasi topology integration
         run: |
@@ -93,6 +107,10 @@ jobs:
         run: |
           set -euo pipefail
           compose=(docker compose --env-file environments/integration/.env.example -f environments/integration/compose.yaml)
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) = 1 FROM hr.employees WHERE employee_id = 'employee_integration_identity' AND employment_status = 'ACTIVE';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) = 1 FROM core.auth_accounts WHERE email = 'identity-employee@alos.test' AND activation_state = 'ACTIVATED' AND administrative_state = 'SUSPENDED';")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) = 1 FROM core.activation_challenges c JOIN core.auth_accounts a ON a.account_id = c.account_id WHERE a.email = 'identity-employee@alos.test' AND c.consumed_at IS NOT NULL;")" = t
+          test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) = 1 FROM core.auth_sessions s JOIN core.auth_accounts a ON a.actor_id = s.actor_id WHERE a.email = 'identity-employee@alos.test' AND s.active = false AND s.revoked_at IS NOT NULL;")" = t
           test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.agent_runs WHERE status = 'COMPLETED' AND input_tokens > 0;")" = t
           test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.agent_runs WHERE status = 'CANCELLED';")" = t
           test "$("${compose[@]}" exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT count(*) >= 1 FROM ai_runtime.agent_run_steps WHERE status = 'SUCCEEDED';")" = t
