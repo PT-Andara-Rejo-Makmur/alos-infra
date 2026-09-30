@@ -166,6 +166,7 @@ def shared_work_smoke() -> None:
 
     owner_permissions = [
         "project.read", "project.create", "project.archive", "task.read", "task.create",
+        "task.update",
         "task.assign", "task.complete", "approval.read", "approval.request",
         "approval.approve", "document.read", "document.create", "document.version",
         "document.review", "document.approve", "report.read", "report.create",
@@ -205,10 +206,32 @@ def shared_work_smoke() -> None:
     )
     task_id = task["task_id"]
     assert task["project_name"] == project["name"]
+    blocker = request(
+        "/api/v1/tasks", token=owner, payload={"title": "Shared Work Prerequisite"},
+    )
+    dependency_path = f"/api/v1/tasks/{task_id}/dependencies"
+    assert request(
+        dependency_path, token=owner,
+        payload={"blocked_by_task_id": blocker["task_id"]},
+    )["blocked_by"][0]["title"] == "Shared Work Prerequisite"
+    assert request(f"/api/v1/tasks/{task_id}", token=owner)["blocked_by"][0][
+        "blocked_by_task_id"
+    ] == blocker["task_id"]
+    expect_denied(
+        dependency_path, {"blocked_by_task_id": blocker["task_id"]}, legacy,
+        expected_statuses={403},
+    )
     assert request(
         f"/api/v1/tasks/{task_id}/assign", token=owner,
         payload={"owner_actor_id": reviewer_id},
     )["owner_actor_id"] == reviewer_id
+    expect_denied(
+        f"/api/v1/tasks/{task_id}/complete", None, owner,
+        method="POST", expected_statuses={409},
+    )
+    assert request(
+        f"/api/v1/tasks/{blocker['task_id']}/complete", token=owner, method="POST"
+    )["status"] == "COMPLETED"
     assert request(
         f"/api/v1/tasks/{task_id}/complete", token=owner, method="POST"
     )["status"] == "COMPLETED"
@@ -221,11 +244,13 @@ def shared_work_smoke() -> None:
 
     approval = request(
         "/api/v1/approvals", token=owner,
-        payload={"subject_type": "PROJECT", "subject_id": project_id},
+        payload={"subject_type": "PROJECT", "subject_id": project_id,
+                 "materiality_value": 1250000.50},
     )
     approval_id = approval["approval_id"]
     assert approval["subject_title"] == project["name"]
     assert approval["requester_name"] == "shared-owner@alos.test"
+    assert approval["materiality_value"] == 1250000.50
     expect_denied(
         f"/api/v1/approvals/{approval_id}/approve", {}, owner,
         expected_statuses={403},
