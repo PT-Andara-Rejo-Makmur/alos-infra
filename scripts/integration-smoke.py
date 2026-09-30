@@ -136,6 +136,200 @@ def expect_denied(
         raise AssertionError("Authority expansion was not denied")
 
 
+def shared_work_smoke() -> None:
+    """Prove dedicated Shared Work authority and persistence in PostgreSQL."""
+    base = {
+        "password": "integration-password",
+        "tenant_id": "tenant_shared_work",
+        "organization_id": "org_shared_work",
+        "workspace_id": "workspace_shared_work",
+        "workspace_key": "shared-work",
+        "workspace_name": "Shared Work Integration",
+        "workspace_type": "BUSINESS",
+        "division_code": "UNASSIGNED",
+        "role_refs": ["DIVISION_MEMBER"],
+        "scope_refs": [],
+        "data_scope": "WORKSPACE",
+    }
+
+    def actor(email: str, permissions: list[str], **changes: object) -> tuple[str, str]:
+        profile = {
+            **base, "email": email, "display_name": email,
+            "permission_refs": permissions, **changes,
+        }
+        registered = request("/api/v1/auth/register", payload=profile)
+        logged_in = request(
+            "/api/v1/auth/login",
+            payload={"email": email, "password": base["password"]},
+        )
+        return logged_in["access_token"], registered["actor"]["actor_id"]
+
+    owner_permissions = [
+        "project.read", "project.create", "project.archive", "task.read", "task.create",
+        "task.assign", "task.complete", "approval.read", "approval.request",
+        "approval.approve", "document.read", "document.create", "document.version",
+        "document.review", "document.approve", "report.read", "report.create",
+        "report.review", "finding.read", "finding.create", "finding.update",
+        "finding.verify",
+    ]
+    owner, owner_id = actor("shared-owner@alos.test", owner_permissions)
+    reviewer, reviewer_id = actor(
+        "shared-reviewer@alos.test",
+        ["task.read", "approval.approve", "document.approve", "report.review",
+         "finding.verify"],
+    )
+    publisher, _ = actor(
+        "shared-publisher@alos.test",
+        ["document.retire", "report.publish", "report.archive", "finding.close"],
+    )
+    legacy, _ = actor("shared-legacy@alos.test", ["work.read", "work.write"])
+    remote, _ = actor(
+        "shared-remote@alos.test", ["work.read", "work.write"],
+        workspace_id="workspace_shared_remote", workspace_key="shared-remote",
+        workspace_name="Remote Shared Work",
+    )
+
+    project = request(
+        "/api/v1/projects", token=owner,
+        payload={"code": "SHARED-INT", "name": "Shared Work Integration"},
+    )
+    project_id = project["project_id"]
+    assert project["status"] == "PLANNED"
+    task = request(
+        "/api/v1/tasks", token=owner,
+        payload={"title": "Shared Work Task", "project_id": project_id},
+    )
+    task_id = task["task_id"]
+    assert request(
+        f"/api/v1/tasks/{task_id}/assign", token=owner,
+        payload={"owner_actor_id": reviewer_id},
+    )["owner_actor_id"] == reviewer_id
+    assert request(
+        f"/api/v1/tasks/{task_id}/complete", token=owner, method="POST"
+    )["status"] == "COMPLETED"
+    assert request(f"/api/v1/tasks/{task_id}", token=owner)["status"] == "COMPLETED"
+    expect_denied(f"/api/v1/projects/{project_id}", None, remote, expected_statuses={404})
+
+    approval = request(
+        "/api/v1/approvals", token=owner,
+        payload={"subject_type": "PROJECT", "subject_id": project_id},
+    )
+    approval_id = approval["approval_id"]
+    expect_denied(
+        f"/api/v1/approvals/{approval_id}/approve", {}, owner,
+        expected_statuses={403},
+    )
+    expect_denied(
+        f"/api/v1/approvals/{approval_id}/approve", {}, legacy,
+        expected_statuses={403},
+    )
+    assert request(
+        f"/api/v1/approvals/{approval_id}/approve", payload={}, token=reviewer
+    )["status"] == "APPROVED"
+
+    document = request(
+        "/api/v1/documents", token=owner,
+        payload={"title": "Shared Work Policy", "category": "Policy",
+                 "data_classification": "INTERNAL"},
+    )
+    document_id = document["document_id"]
+    source_id = "source_shared_work_smoke"
+    assert postgres_sql(
+        "INSERT INTO core.sources "
+        "(source_id,tenant_id,organization_id,workspace_id,title,source_type,"
+        "data_classification,created_by,created_at) VALUES "
+        "('source_shared_work_smoke','tenant_shared_work','org_shared_work',"
+        "'workspace_shared_work','Verified fixture','PDF','INTERNAL',"
+        "'shared_work_fixture',now()); "
+        "INSERT INTO core.source_versions "
+        "(source_id,source_version,tenant_id,organization_id,workspace_id,"
+        "storage_uri,content_hash,status,created_by,created_at) VALUES "
+        "('source_shared_work_smoke','1','tenant_shared_work','org_shared_work',"
+        "'workspace_shared_work','urn:alos:source:shared-work:1',"
+        "'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+        "'VERIFIED','shared_work_fixture',now()); "
+        "SELECT status FROM core.source_versions "
+        "WHERE source_id='source_shared_work_smoke';"
+    ) == "VERIFIED"
+    version = request(
+        f"/api/v1/documents/{document_id}/versions", token=owner,
+        payload={"version": "1.0", "source_id": source_id, "source_version": "1"},
+    )
+    assert version["content_hash"].startswith("sha256:")
+    expect_denied(
+        f"/api/v1/documents/{document_id}/approve", None, owner,
+        method="POST", expected_statuses={403},
+    )
+    expect_denied(
+        f"/api/v1/documents/{document_id}/review", None, legacy,
+        method="POST", expected_statuses={403},
+    )
+    assert request(
+        f"/api/v1/documents/{document_id}/review", token=owner, method="POST"
+    )["status"] == "IN_REVIEW"
+    assert request(
+        f"/api/v1/documents/{document_id}/approve", token=reviewer, method="POST"
+    )["status"] == "APPROVED"
+    assert request(
+        f"/api/v1/documents/{document_id}/retire", token=publisher, method="POST"
+    )["status"] == "RETIRED"
+    assert request(
+        f"/api/v1/documents/{document_id}/versions", token=owner
+    )[0]["content_hash"] == version["content_hash"]
+
+    report = request(
+        "/api/v1/work/reports/results", token=owner,
+        payload={"title": "Shared Work Result", "report_type": "OPERATIONAL"},
+    )
+    report_id = report["report_id"]
+    report_path = f"/api/v1/work/reports/results/{report_id}"
+    assert request(f"{report_path}/submit-review", token=owner, method="POST")["status"] == "IN_REVIEW"
+    expect_denied(f"{report_path}/review", None, owner, method="POST", expected_statuses={403})
+    expect_denied(f"{report_path}/review", None, legacy, method="POST", expected_statuses={403})
+    assert request(f"{report_path}/review", token=reviewer, method="POST")["status"] == "APPROVED"
+    assert request(f"{report_path}/publish", token=publisher, method="POST")["status"] == "PUBLISHED"
+    assert request(f"{report_path}/archive", token=publisher, method="POST")["status"] == "ARCHIVED"
+
+    finding = request(
+        "/api/v1/work/findings", token=owner,
+        payload={"title": "Shared Work Finding", "severity": "MEDIUM"},
+    )
+    finding_id = finding["finding_id"]
+    finding_path = f"/api/v1/work/findings/{finding_id}"
+    assert request(f"{finding_path}/start", token=owner, method="POST")["status"] == "IN_PROGRESS"
+    assert request(
+        f"{finding_path}/submit-verification", token=owner, method="POST"
+    )["status"] == "PENDING_VERIFICATION"
+    expect_denied(f"{finding_path}/verify", None, owner, method="POST", expected_statuses={403})
+    expect_denied(f"{finding_path}/verify", None, legacy, method="POST", expected_statuses={403})
+    assert request(f"{finding_path}/verify", token=reviewer, method="POST")["status"] == "VERIFIED"
+    assert request(f"{finding_path}/close", token=publisher, method="POST")["status"] == "CLOSED"
+
+    for resource, identifier in (
+        ("projects", project_id), ("tasks", task_id),
+        ("work_approvals", approval_id), ("work_reports", report_id),
+        ("work_findings", finding_id),
+    ):
+        expect_denied(
+            f"/api/v1/domains/shared/{resource}/{identifier}",
+            {"status": "DRAFT"}, legacy, method="PATCH", expected_statuses={409},
+        )
+
+    for table, column, identifier, status in (
+        ("projects", "project_id", project_id, "PLANNED"),
+        ("tasks", "task_id", task_id, "COMPLETED"),
+        ("work_approvals", "approval_id", approval_id, "APPROVED"),
+        ("documents", "document_id", document_id, "RETIRED"),
+        ("work_reports", "report_id", report_id, "ARCHIVED"),
+        ("work_findings", "finding_id", finding_id, "CLOSED"),
+    ):
+        assert postgres_sql(
+            f"SELECT status FROM core.{table} WHERE {column}='{identifier}';"
+        ) == status
+    assert owner_id != reviewer_id
+    print("Shared Work dedicated lifecycle and PostgreSQL integration passed")
+
+
 def strategy_smoke() -> None:
     """Prove the deterministic Strategy cascade through a fresh persisted session."""
     executive = {
@@ -738,6 +932,7 @@ def main() -> int:
         expected_statuses={403},
     )
 
+    shared_work_smoke()
     strategy_smoke()
 
     bootstrap = request("/api/v1/integration/bootstrap", payload={}, token=token)
