@@ -50,6 +50,30 @@ def activation_credential(email: str) -> str:
     return credential
 
 
+def deployed_email_provider_smoke() -> None:
+    """Validate deployed Settings in the actual Backend runtime, without email delivery."""
+    proof = '''
+from alos.config import Settings
+from pydantic import ValidationError
+smtp = dict(EMAIL_FROM="notification@example.com", EMAIL_FROM_NAME="ALOS",
+    SMTP_HOST="mail.example.com", SMTP_PORT=587, SMTP_USERNAME="smtp-user",
+    SMTP_PASSWORD="integration-only-value", APP_PUBLIC_URL="https://app.example.com")
+for environment in ("staging", "production"):
+    for provider in ("inmemory", "test", "sink", "memory"):
+        try:
+            Settings(_env_file=None, APP_ENV=environment, EMAIL_PROVIDER=provider,
+                ENABLE_TEST_TOOLS=False, ENABLE_TEST_REGISTRATION=False, **smtp)
+        except ValidationError as error:
+            assert "require EMAIL_PROVIDER=smtp" in str(error)
+        else:
+            raise AssertionError("Deployed test email adapter was accepted")
+    assert Settings(_env_file=None, APP_ENV=environment, EMAIL_PROVIDER="smtp",
+        ENABLE_TEST_TOOLS=False, ENABLE_TEST_REGISTRATION=False, **smtp).is_email_configured
+print("Deployed email provider guard: 8 rejections, 2 generic SMTP configurations accepted")
+'''
+    print(compose_output("exec", "-T", "backend", "python", "-c", proof))
+
+
 def expect_web_error(
     opener: urllib.request.OpenerDirector,
     path: str,
@@ -814,6 +838,33 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
         f"WHERE actor_id = '{account['actor_id']}' AND active = true AND revoked_at IS NULL;"
     ) == "t"
 
+    # A separate employee session lets the browser session continue the suspend regression.
+    specific_login = request("/api/v1/auth/login", payload={"email": email, "password": "EmployeePass!123"})
+    specific_token = specific_login["access_token"]
+    assert request("/api/v1/auth/whoami", token=specific_token)["actor"]["actor_id"] == account["actor_id"]
+    token_hash = hashlib.sha256(specific_token.encode()).hexdigest()
+    specific_session = postgres_sql(
+        f"SELECT session_id FROM core.auth_sessions WHERE token_hash = '{token_hash}' AND active;"
+    )
+    assert specific_session
+    sessions_path = f"/api/v1/identity/actors/{account['actor_id']}/sessions"
+    request(f"{sessions_path}/{specific_session}", method="DELETE", token=admin_token)
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM core.auth_sessions "
+        f"WHERE session_id = '{specific_session}' AND active = false AND revoked_at IS NOT NULL;"
+    ) == "t"
+    expect_denied("/api/v1/auth/whoami", None, specific_token, expected_statuses={401})
+    listed = request(sessions_path, token=admin_token)
+    assert next(row for row in listed if row["session_id"] == specific_session)["revoked"] is True
+    assert postgres_sql(
+        "SELECT count(*) = 1 FROM audit.audit_records "
+        "WHERE event_type = 'auth.session.revoked' "
+        f"AND event_metadata->>'session_id' = '{specific_session}';"
+    ) == "t"
+    expect_denied(f"{sessions_path}/{specific_session}", None, admin_token,
+                  method="DELETE", expected_statuses={404})
+    print("Admin specific-session revoke: PostgreSQL inactive, timestamp retained, old token denied, projection revoked")
+
     # Resend activation challenge for expired account
     resend_result = request(
         f"/api/v1/identity/actors/{expired_account['actor_id']}/activation/resend",
@@ -841,7 +892,7 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
         "AND active = false AND administrative_state = 'SUSPENDED';"
     ) == "t"
     assert postgres_sql(
-        "SELECT count(*) = 1 FROM core.auth_sessions "
+        "SELECT count(*) = 2 FROM core.auth_sessions "
         f"WHERE actor_id = '{account['actor_id']}' AND active = false "
         "AND revoked_at IS NOT NULL;"
     ) == "t"
@@ -968,6 +1019,7 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
 
 
 def main() -> int:
+    deployed_email_provider_smoke()
     registration = {
         "email": "integration@alos.test",
         "password": "integration-password",

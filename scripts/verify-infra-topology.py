@@ -358,10 +358,12 @@ def test_topology() -> None:
             assert values[key] == ""
         assert values["EMAIL_FROM_NAME"] == "ALOS"
         environment = compose["services"]["backend"]["environment"]
+        assert environment["EMAIL_PROVIDER"] == "smtp"
+        assert environment["APP_ENV"] == ("production" if env_path == app_env_file else "staging")
         assert "SMTP_PASSWORD" in environment and "SMTP_APP_PASSWORD" not in environment
         assert not environment["SMTP_HOST"]
         assert not environment["EMAIL_FROM"]
-    print("  [PASS] 26. Provider-neutral SMTP with explicit sender, host, credentials and public URL")
+    print("  [PASS] 26. Staging/production explicitly use provider-neutral SMTP; no test email provider")
 
     print("\n================================================================================")
     print("SELURUH 26 INVARIANT TOPOLOGI, KEAMANAN, DAN OPERASIONAL 4 VPS SUKSES TERVERIFIKASI!")
