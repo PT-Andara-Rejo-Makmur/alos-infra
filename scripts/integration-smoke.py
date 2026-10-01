@@ -536,6 +536,20 @@ def business_domains_smoke() -> None:
     })
     expect_denied(f"/api/v1/sales/bookings/{booking['booking_id']}/transition",
                   {"status": "CONFIRMED"}, token, expected_statuses={409})
+    closing = create("sales", "closings", {
+        "booking_id": booking["booking_id"], "customer_id": customer["customer_id"],
+        "property_unit_id": unit["property_unit_id"], "closing_date": "2027-01-02",
+    })
+    expect_denied(f"/api/v1/sales/closings/{closing['closing_id']}/transition",
+                  {"status": "COMPLETED"}, token, expected_statuses={409})
+    pricing = create("sales", "pricings", {"name": "Prepared pricing"})
+    create("sales", "pricing-items", {
+        "pricing_id": pricing["pricing_id"], "property_unit_id": unit["property_unit_id"],
+        "price": "100.00", "currency": "USD",
+    })
+    assert pricing["allowed_transitions"] == []
+    expect_denied(f"/api/v1/sales/pricings/{pricing['pricing_id']}/transition",
+                  {"status": "ACTIVE"}, token, expected_statuses={409})
     campaign = create("marketing", "campaigns", {"name": "Manual campaign"})
     transition("marketing", "campaigns", campaign["campaign_id"], "ACTIVE")
     create("marketing", "attributions", {
@@ -558,6 +572,23 @@ def business_domains_smoke() -> None:
     transition("property", "change-orders", order["change_order_id"], "SUBMITTED")
     expect_denied(f"/api/v1/property/change-orders/{order['change_order_id']}/transition",
                   {"status": "APPROVED"}, token, expected_statuses={409})
+    certificate = create("property", "payment-certificates", {
+        "project_id": project["project_id"], "certificate_number": "PC1",
+        "period": "2027-01", "amount": "10.25",
+    })
+    transition("property", "payment-certificates", certificate["payment_certificate_id"], "SUBMITTED")
+    expect_denied(f"/api/v1/property/payment-certificates/{certificate['payment_certificate_id']}/transition",
+                  {"status": "APPROVED"}, token, expected_statuses={409})
+    budget = create("finance", "budgets", {"name": "Prepared budget", "fiscal_year": 2027})
+    create("finance", "budget-lines", {
+        "budget_id": budget["budget_id"], "account_code": "OPS", "period": "2027-01",
+        "planned_amount": "100.00",
+    })
+    reviewed = transition("finance", "budgets", budget["budget_id"], "UNDER_REVIEW")
+    assert reviewed["allowed_transitions"] == ["DRAFT"]
+    expect_denied(f"/api/v1/finance/budgets/{budget['budget_id']}/transition",
+                  {"status": "APPROVED"}, token, expected_statuses={409})
+    transition("finance", "budgets", budget["budget_id"], "DRAFT")
     account = create("finance", "bank-accounts", {
         "account_name": "Internal ledger", "bank_name": "Recorded", "currency": "USD",
     })
@@ -591,9 +622,24 @@ def business_domains_smoke() -> None:
         "month_close_id": close["month_close_id"], "item_type": "INTERNAL_REVIEW",
     })
     transition("finance", "month-close-items", checklist["month_close_item_id"], "COMPLETED")
-    transition("finance", "month-closes", close["month_close_id"], "CLOSED")
+    assert close["allowed_transitions"] == []
+    expect_denied(f"/api/v1/finance/month-closes/{close['month_close_id']}/transition",
+                  {"status": "CLOSED"}, token, expected_statuses={409})
+    assert request(f"/api/v1/finance/month-closes/{close['month_close_id']}", token=token)["status"] == "OPEN"
+    # Restore a historical fixture in the disposable smoke database. This is not
+    # a business command or a grant of final close authority.
+    historical = create("finance", "month-closes", {"period": "2027-02"})
+    historical_id = historical["month_close_id"]
+    assert re.fullmatch(r"[a-f0-9]{32}", historical_id)
+    postgres_sql(f"UPDATE finance.month_closes SET status='CLOSED' "
+                 f"WHERE month_close_id='{historical_id}' "
+                 "AND tenant_id='tenant_integration_001' "
+                 "AND organization_id='org_integration_001' "
+                 "AND workspace_id='workspace_business_smoke';")
+    read_history = request(f"/api/v1/finance/month-closes/{historical_id}", token=token)
+    assert read_history["status"] == "CLOSED" and read_history["allowed_transitions"] == []
     expect_denied("/api/v1/finance/bank-transactions", {
-        "bank_account_id": account["bank_account_id"], "transaction_date": "2027-01-03",
+        "bank_account_id": account["bank_account_id"], "transaction_date": "2027-02-03",
         "direction": "IN", "amount": "1.00", "currency": "USD",
     }, token, expected_statuses={409})
     for domain in ("sales", "marketing", "property", "finance"):
