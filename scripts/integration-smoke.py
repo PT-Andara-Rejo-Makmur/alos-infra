@@ -511,6 +511,14 @@ def strategy_smoke() -> None:
         "data_scope": "WORKSPACE",
     }
     request("/api/v1/auth/register", payload=unrelated)
+    division = {
+        **executive, "email": "strategy-division@alos.test",
+        "workspace_id": "workspace_strategy_sales", "workspace_key": "strategy-sales",
+        "workspace_name": "Strategy allocation workspace", "workspace_type": "BUSINESS",
+        "role_refs": ["DIVISION_LEAD"],
+        "permission_refs": ["strategy.read", "strategy.division.manage"], "data_scope": "WORKSPACE",
+    }
+    request("/api/v1/auth/register", payload=division)
     executive_login = request(
         "/api/v1/auth/login",
         payload={"email": executive["email"], "password": executive["password"]},
@@ -594,10 +602,20 @@ def strategy_smoke() -> None:
         token=token,
         correlation_id="corr_strategy_observation_001",
     )
+    derived_target = {
+        **root_target,
+        "target_id": derived_target_id,
+        "code": "KPI-INTEGRATION-LEADS",
+        "name": "Integration derived sales lead target",
+        "scope": {"type": "DIVISION", "ref": "workspace_strategy_sales"},
+        "owner_workspace_id": "workspace_strategy_sales",
+        "owner_role_ref": "DIVISION_LEAD",
+    }
     preview = request(
         "/api/v1/strategy/cascade/preview",
         payload={
             "root_target_ref": {"target_id": root_target_id, "version": 1},
+            "derived_targets": [derived_target],
             "rules": [
                 {
                     "cascade_rule_id": "rule.integration.required-leads",
@@ -633,18 +651,10 @@ def strategy_smoke() -> None:
     targets_after_preview = request("/api/v1/strategy/targets", token=token)
     assert [item["target_id"] for item in targets_after_preview] == [root_target_id]
 
-    derived_target = {
-        **root_target,
-        "target_id": derived_target_id,
-        "code": "KPI-INTEGRATION-LEADS",
-        "name": "Integration derived sales lead target",
-        "scope": {"type": "DIVISION", "ref": "workspace_strategy_sales"},
-        "owner_workspace_id": "workspace_strategy_sales",
-        "owner_role_ref": "DIVISION_LEAD",
-    }
     accepted = request(
         f"/api/v1/strategy/cascade-runs/{preview['cascade_run_id']}/accept",
-        payload={"derived_targets": [derived_target]},
+        payload={"derived_targets": [derived_target], "input_hash": preview["input_hash"],
+                 "result_hash": preview["result_hash"]},
         token=token,
         correlation_id="corr_strategy_accept_001",
     )
@@ -659,6 +669,24 @@ def strategy_smoke() -> None:
     assert approved["lifecycle_state"] == "APPROVED"
     activated = request(f"/api/v1/strategy/plans/{plan_id}/activate", payload={}, token=token)
     assert activated["lifecycle_state"] == "ACTIVE"
+    for kind, value in (("ACTUAL", 5), ("FORECAST", 8)):
+        request(f"/api/v1/strategy/targets/{root_target_id}/observations", token=token, payload={
+            "observation_id": f"observation.integration.{kind.lower()}",
+            "target_id": root_target_id, "target_version": 1, "kind": kind, "value": value,
+            "unit": "COUNT", "period": period, "source_mode": "MANUAL_EVIDENCED",
+            "observed_at": "2027-06-30T00:00:00Z", "verification_state": "PENDING_VERIFICATION",
+            "evidence_refs": ["evidence:integration-monitoring"],
+        })
+    overview = request("/api/v1/executive/overview", token=token)
+    assert overview["strategy"]["status"] == "CONNECTED"
+    assert overview["strategy_data"]["active_operating_plans"][0]["plan_id"] == plan_id
+    assert overview["shared_work"]["status"] == "UNAVAILABLE"
+    assert all(item["status"] == "UNAVAILABLE" for item in overview["domains"])
+    details = next(item for item in overview["strategy_data"]["targets"]
+                   if item["target"]["target_id"] == root_target_id)
+    assert details["selected_observations"]["actual"]["value"] == "5"
+    assert details["selected_observations"]["forecast"]["value"] == "8"
+    assert details["performance_state"] == "NOT_EVALUATED"
 
     fresh_login = request(
         "/api/v1/auth/login",
