@@ -486,6 +486,7 @@ def business_domains_smoke() -> None:
         "permission_refs": [
             "sales.read", "sales.write", "marketing.read", "marketing.write",
             "property.read", "property.write", "finance.read", "finance.write",
+            "legal.read", "legal.write", "hr.read", "hr.write", "it.read", "it.write",
             "project.read", "project.create", "document.read", "document.create",
         ], "scope_refs": [], "data_scope": "WORKSPACE",
     }
@@ -493,7 +494,7 @@ def business_domains_smoke() -> None:
     token = request("/api/v1/auth/login", payload={
         "email": owner["email"], "password": owner["password"],
     })["access_token"]
-    for domain in ("sales", "marketing", "property", "finance"):
+    for domain in ("sales", "marketing", "property", "finance", "legal", "hr", "it"):
         empty = request(f"/api/v1/{domain}/overview", token=token)
         assert empty["source"]["status"] == "CONNECTED_EMPTY"
         assert empty["source"]["authoritative"] is True
@@ -642,7 +643,48 @@ def business_domains_smoke() -> None:
         "bank_account_id": account["bank_account_id"], "transaction_date": "2027-02-03",
         "direction": "IN", "amount": "1.00", "currency": "USD",
     }, token, expected_statuses={409})
-    for domain in ("sales", "marketing", "property", "finance"):
+    contract = create("legal", "contracts", {
+        "contract_number": "LEGAL-SMOKE", "contract_type": "SERVICE",
+        "counterparty_name": "Recorded counterparty",
+    })
+    transition("legal", "contracts", contract["contract_id"], "IN_REVIEW")
+    expect_denied(f"/api/v1/legal/contracts/{contract['contract_id']}/transition",
+                  {"status": "SIGNED"}, token, expected_statuses={422})
+    employee = create("hr", "employees", {
+        "employee_number": "HR-SMOKE", "full_name": "Recorded employee",
+    })
+    assert employee["actor_id"] is None
+    leave = create("hr", "leave-requests", {
+        "employee_id": employee["employee_id"], "leave_type": "ANNUAL",
+        "start_date": "2027-01-01", "end_date": "2027-01-02",
+    })
+    expect_denied(f"/api/v1/hr/leave-requests/{leave['leave_request_id']}/transition",
+                  {"status": "APPROVED"}, token, expected_statuses={422})
+    system = create("it", "systems", {
+        "system_code": "IT-SMOKE", "name": "Recorded system", "criticality": "HIGH",
+    })
+    incident = create("it", "incidents", {
+        "system_id": system["system_id"], "title": "Recorded incident",
+        "severity": "HIGH", "description": "Explicit operator evidence",
+    })
+    transition("it", "incidents", incident["incident_id"], "INVESTIGATING")
+    release = create("it", "releases", {"version": "recorded-inventory"})
+    expect_denied(f"/api/v1/it/releases/{release['it_release_id']}/transition",
+                  {"status": "RELEASED"}, token, expected_statuses={422})
+    for domain, resource, values in (
+        ("legal", "contracts", {"contract_number": "forbidden"}),
+        ("hr", "employees", {"full_name": "forbidden"}),
+        ("it", "systems", {"name": "forbidden"}),
+    ):
+        expect_denied(f"/api/v1/domains/{domain}/{resource}", values, token,
+                      expected_statuses={409})
+    assert postgres_sql("SELECT employment_status FROM hr.employees "
+                        "WHERE employee_number='HR-SMOKE' AND tenant_id='tenant_integration_001';") == "ACTIVE"
+    assert postgres_sql("SELECT status FROM legal.contracts "
+                        "WHERE contract_number='LEGAL-SMOKE' AND tenant_id='tenant_integration_001';") == "IN_REVIEW"
+    assert postgres_sql("SELECT status FROM it.systems "
+                        "WHERE system_code='IT-SMOKE' AND tenant_id='tenant_integration_001';") == "ACTIVE"
+    for domain in ("sales", "marketing", "property", "finance", "legal", "hr", "it"):
         status, overview = web_request(browser, f"/api/backend/api/v1/{domain}/overview")
         assert status == 200 and overview["source"]["status"] == "CONNECTED"
         assert overview["source"]["authoritative"] is True
@@ -652,11 +694,10 @@ def business_domains_smoke() -> None:
     })["access_token"]
     executive = request("/api/v1/executive/overview", token=executive_token)
     for domain in executive["domains"]:
-        assert domain["status"] == ("CONNECTED" if domain["domain"] in {"SALES", "PROPERTY", "FINANCE"}
-                                    else "UNAVAILABLE")
+        assert domain["status"] == "CONNECTED"
     assert postgres_sql("SELECT outstanding_amount FROM finance.receivables "
                         "WHERE reference='receivables' AND tenant_id='tenant_integration_001';") == "0.00"
-    print("Sales/Marketing, Property, Finance Web-Backend-PostgreSQL and Executive smoke passed")
+    print("Sales/Marketing, Property, Finance, Legal, HR, IT Web-Backend-PostgreSQL and Executive smoke passed")
 
 
 def strategy_smoke() -> None:
@@ -923,8 +964,8 @@ def strategy_smoke() -> None:
     print("Executive Web-Backend-PostgreSQL authoritative overview passed")
     expect_denied("/api/v1/executive/overview", None, editor_token, expected_statuses={403})
     assert all(
-        item["status"] == ("CONNECTED_EMPTY" if item["domain"] in {"SALES", "PROPERTY", "FINANCE"}
-                           else "UNAVAILABLE")
+        # Identity smoke already persisted employee records in this company.
+        item["status"] == ("CONNECTED" if item["domain"] == "HR" else "CONNECTED_EMPTY")
         for item in overview["domains"]
     )
     details = next(item for item in overview["strategy_data"]["targets"]
