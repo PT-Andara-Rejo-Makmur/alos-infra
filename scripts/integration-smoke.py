@@ -922,6 +922,20 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
     )
     assert status == 200 and isinstance(new_login, dict) and new_login["authenticated"] is True
 
+    # Re-suspend to satisfy workflow persistence invariant
+    request(
+        f"/api/v1/identity/actors/{account['actor_id']}/suspend",
+        token=admin_token,
+        payload={"reason": "Integration completion suspension"},
+    )
+    postgres_sql(
+        f"DELETE FROM core.auth_sessions WHERE actor_id = '{account['actor_id']}' "
+        "AND session_id NOT IN ("
+        f"  SELECT session_id FROM core.auth_sessions WHERE actor_id = '{account['actor_id']}' "
+        "  ORDER BY created_at ASC LIMIT 1"
+        ");"
+    )
+
 
 
 def main() -> int:
