@@ -679,6 +679,13 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
 
     candidates = request("/api/v1/identity/provisioning-candidates", token=admin_token)
     assert {item["employee_id"] for item in candidates} >= {employee_id, expired_employee_id}
+    expect_denied(
+        "/api/v1/identity/accounts",
+        {"employee_id": employee_id, "email": "override@example.test",
+         "workspace_id": workspace_id, "role_refs": ["DIVISION_MEMBER"],
+         "effective_at": "2026-01-01T00:00:00Z"},
+        admin_token, expected_statuses={422},
+    )
 
     def provision(person_id: str, person_email: str) -> dict:
         account = request(
@@ -686,12 +693,12 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
             token=admin_token,
             payload={
                 "employee_id": person_id,
-                "email": person_email,
                 "workspace_id": workspace_id,
                 "role_refs": ["DIVISION_MEMBER"],
                 "effective_at": "2026-01-01T00:00:00Z",
             },
         )
+        assert account["email"] == person_email
         assert account["activation_state"] == "PENDING"
         assert re.fullmatch(r"actor_[0-9a-f]{32}", account["actor_id"])
         assert postgres_sql(
@@ -880,6 +887,11 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
     )
     assert status == 200
     assert "Jika email terdaftar" in reset_request.get("message", "")
+    status, unknown_reset = web_request(
+        employee_browser, "/api/session/password-reset/request",
+        payload={"email": "unknown@example.test"},
+    )
+    assert status == 200 and unknown_reset == reset_request
     assert postgres_sql(
         "SELECT count(*) >= 1 FROM core.password_reset_challenges prc "
         "JOIN core.auth_accounts aa ON prc.account_id = aa.account_id "
@@ -899,6 +911,23 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
     )
     assert status == 200
     assert "Kata sandi berhasil diperbarui" in reset_confirm.get("message", "")
+    for event_type in (
+        "identity.account.provisioned", "identity.activation.challenge_issued",
+        "identity.activation.resent", "identity.account.activated",
+        "identity.account.suspended", "identity.account.reactivated",
+        "auth.password_reset.requested", "auth.password_reset.completed", "auth.password.changed",
+    ):
+        assert postgres_sql(
+            "SELECT count(*) >= 1 FROM audit.audit_records "
+            f"WHERE event_type = '{event_type}';"
+        ) == "t"
+    assert postgres_sql(
+        "SELECT count(*) = 0 FROM audit.audit_records "
+        "WHERE event_type IN ('auth.password_reset.requested', 'auth.password_reset.completed', "
+        "'auth.password.changed') AND (entity_type <> 'auth' OR "
+        "entity_id <> 'password_reset_request' OR actor_id <> 'anonymous' OR "
+        "event_metadata::text <> '{}');"
+    ) == "t"
     assert postgres_sql(
         "SELECT count(*) >= 1 FROM core.password_reset_challenges prc "
         "JOIN core.auth_accounts aa ON prc.account_id = aa.account_id "

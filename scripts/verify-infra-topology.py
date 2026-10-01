@@ -347,8 +347,24 @@ def test_topology() -> None:
     assert "@sha256:" in rollback_content and "backward-compatible" in rollback_content
     print("  [PASS] 25. Complete Disaster Recovery & Rollback runbooks with decision matrix exist")
 
+    # 26. SMTP deployment examples stay provider-neutral and require explicit secrets.
+    for env_path, compose in ((app_env_file, app_json), (staging_env_file, staging_json)):
+        values = dict(
+            line.split("=", 1) for line in env_path.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#") and "=" in line
+        )
+        assert values["EMAIL_PROVIDER"] == "smtp"
+        for key in ("EMAIL_FROM", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "APP_PUBLIC_URL"):
+            assert values[key] == ""
+        assert values["EMAIL_FROM_NAME"] == "ALOS"
+        environment = compose["services"]["backend"]["environment"]
+        assert "SMTP_PASSWORD" in environment and "SMTP_APP_PASSWORD" not in environment
+        assert not environment["SMTP_HOST"]
+        assert not environment["EMAIL_FROM"]
+    print("  [PASS] 26. Provider-neutral SMTP with explicit sender, host, credentials and public URL")
+
     print("\n================================================================================")
-    print("SELURUH 25 INVARIANT TOPOLOGI, KEAMANAN, DAN OPERASIONAL 4 VPS SUKSES TERVERIFIKASI!")
+    print("SELURUH 26 INVARIANT TOPOLOGI, KEAMANAN, DAN OPERASIONAL 4 VPS SUKSES TERVERIFIKASI!")
     print("================================================================================")
 
 
