@@ -601,6 +601,9 @@ def strategy_smoke() -> None:
             "rules": [
                 {
                     "cascade_rule_id": "rule.integration.required-leads",
+                    "tenant_id": executive["tenant_id"],
+                    "organization_id": executive["organization_id"],
+                    "version": 1,
                     "rule_type": "RATIO_DIVIDE_CEIL",
                     "input_target_refs": [{"target_id": root_target_id, "version": 1}],
                     "output_target_refs": [{"target_id": derived_target_id, "version": 1}],
