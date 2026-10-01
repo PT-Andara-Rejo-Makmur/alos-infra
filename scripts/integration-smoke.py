@@ -932,7 +932,7 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
         f"DELETE FROM core.auth_sessions WHERE actor_id = '{account['actor_id']}' "
         "AND session_id NOT IN ("
         f"  SELECT session_id FROM core.auth_sessions WHERE actor_id = '{account['actor_id']}' "
-        "  ORDER BY created_at ASC LIMIT 1"
+        "  ORDER BY issued_at ASC LIMIT 1"
         ");"
     )
 
