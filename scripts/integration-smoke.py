@@ -474,6 +474,145 @@ def shared_work_smoke() -> None:
     print("Shared Work dedicated lifecycle and PostgreSQL integration passed")
 
 
+def business_domains_smoke() -> None:
+    """Use public canonical commands and Web BFF against the real migrated stack."""
+    owner = {
+        "email": "business-owner@alos.test", "password": "integration-password",
+        "display_name": "Business integration owner",
+        "tenant_id": "tenant_integration_001", "organization_id": "org_integration_001",
+        "workspace_id": "workspace_business_smoke", "workspace_key": "business-smoke",
+        "workspace_name": "Business smoke", "workspace_type": "BUSINESS",
+        "division_code": "SALES", "role_refs": ["DIVISION_LEAD"],
+        "permission_refs": [
+            "sales.read", "sales.write", "marketing.read", "marketing.write",
+            "property.read", "property.write", "finance.read", "finance.write",
+            "project.read", "project.create", "document.read", "document.create",
+        ], "scope_refs": [], "data_scope": "WORKSPACE",
+    }
+    request("/api/v1/auth/register", payload=owner)
+    token = request("/api/v1/auth/login", payload={
+        "email": owner["email"], "password": owner["password"],
+    })["access_token"]
+    for domain in ("sales", "marketing", "property", "finance"):
+        empty = request(f"/api/v1/{domain}/overview", token=token)
+        assert empty["source"]["status"] == "CONNECTED_EMPTY"
+        assert empty["source"]["authoritative"] is True
+        assert empty["last_updated_at"] is None
+    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+    status, login = web_request(browser, "/api/session/login", payload={
+        "email": owner["email"], "password": owner["password"],
+    })
+    assert status == 200 and login["authenticated"]
+
+    def create(domain: str, resource: str, values: dict) -> dict:
+        status, data = web_request(browser, f"/api/backend/api/v1/{domain}/{resource}",
+                                   payload=values)
+        assert status == 201 and isinstance(data, dict)
+        assert data["workspace_id"] == owner["workspace_id"]
+        return data
+
+    def transition(domain: str, resource: str, identity: str, state: str) -> dict:
+        return request(f"/api/v1/{domain}/{resource}/{identity}/transition", token=token,
+                       payload={"status": state})
+
+    customer = create("sales", "customers", {"customer_code": "SMOKE-C1", "name": "Buyer"})
+    lead = create("sales", "leads", {"customer_id": customer["customer_id"], "source": "Manual"})
+    transition("sales", "leads", lead["lead_id"], "QUALIFIED")
+    opportunity = create("sales", "opportunities", {
+        "customer_id": customer["customer_id"], "lead_id": lead["lead_id"], "name": "Recorded lead",
+    })
+    request(f"/api/v1/sales/opportunities/{opportunity['opportunity_id']}/pipeline", token=token,
+            payload={"stage": "Qualified"})
+    project = request("/api/v1/projects", token=token,
+                      payload={"code": "BIZ-SMOKE", "name": "Canonical project"})
+    unit = create("property", "property-units", {
+        "unit_code": "SMOKE-U1", "project_id": project["project_id"],
+    })
+    status, units = web_request(browser, "/api/backend/api/v1/sales/property-units")
+    assert status == 200 and units["items"][0]["property_unit_id"] == unit["property_unit_id"]
+    booking = create("sales", "bookings", {
+        "customer_id": customer["customer_id"], "property_unit_id": unit["property_unit_id"],
+        "booking_date": "2027-01-01",
+    })
+    expect_denied(f"/api/v1/sales/bookings/{booking['booking_id']}/transition",
+                  {"status": "CONFIRMED"}, token, expected_statuses={409})
+    campaign = create("marketing", "campaigns", {"name": "Manual campaign"})
+    transition("marketing", "campaigns", campaign["campaign_id"], "ACTIVE")
+    create("marketing", "attributions", {
+        "campaign_id": campaign["campaign_id"], "lead_id": lead["lead_id"],
+        "occurred_at": "2026-01-01T00:00:00Z",
+    })
+    package = create("property", "construction-packages", {
+        "project_id": project["project_id"], "package_code": "P1", "name": "Recorded work",
+    })
+    transition("property", "construction-packages", package["construction_package_id"], "IN_PROGRESS")
+    update = create("property", "construction-updates", {
+        "construction_package_id": package["construction_package_id"], "update_date": "2027-01-02",
+        "progress_percent": "25.25",
+    })
+    assert update["progress_percent"] == "25.25"
+    order = create("property", "change-orders", {
+        "project_id": project["project_id"], "change_number": "CO1",
+        "description": "Recorded internal change", "amount_delta": "10.25",
+    })
+    transition("property", "change-orders", order["change_order_id"], "SUBMITTED")
+    expect_denied(f"/api/v1/property/change-orders/{order['change_order_id']}/transition",
+                  {"status": "APPROVED"}, token, expected_statuses={409})
+    account = create("finance", "bank-accounts", {
+        "account_name": "Internal ledger", "bank_name": "Recorded", "currency": "USD",
+    })
+    transaction = create("finance", "bank-transactions", {
+        "bank_account_id": account["bank_account_id"], "transaction_date": "2027-01-02",
+        "direction": "IN", "amount": "10.25", "currency": "USD",
+    })
+    for resource, payments, identifier in (
+        ("receivables", "receivable-payments", "receivable_id"),
+        ("payables", "payable-payments", "payable_id"),
+    ):
+        invoice = create("finance", resource, {"reference": resource, "amount": "100.01"})
+        create("finance", payments, {identifier: invoice[identifier],
+                                    "payment_date": "2027-01-02", "amount": "100.01",
+                                    "reference": "SMOKE-PAYMENT"})
+        paid = request(f"/api/v1/finance/{resource}/{invoice[identifier]}", token=token)
+        assert paid["status"] == "PAID" and paid["outstanding_amount"] == "0.00"
+    reconciliation = create("finance", "reconciliations", {
+        "bank_account_id": account["bank_account_id"],
+        "period_start": "2027-01-01", "period_end": "2027-01-31",
+    })
+    item = create("finance", "reconciliation-items", {
+        "reconciliation_id": reconciliation["reconciliation_id"],
+        "transaction_id": transaction["transaction_id"],
+        "expected_amount": "10.25", "actual_amount": "10.25",
+    })
+    transition("finance", "reconciliation-items", item["reconciliation_item_id"], "MATCHED")
+    transition("finance", "reconciliations", reconciliation["reconciliation_id"], "CLOSED")
+    close = create("finance", "month-closes", {"period": "2027-01"})
+    checklist = create("finance", "month-close-items", {
+        "month_close_id": close["month_close_id"], "item_type": "INTERNAL_REVIEW",
+    })
+    transition("finance", "month-close-items", checklist["month_close_item_id"], "COMPLETED")
+    transition("finance", "month-closes", close["month_close_id"], "CLOSED")
+    expect_denied("/api/v1/finance/bank-transactions", {
+        "bank_account_id": account["bank_account_id"], "transaction_date": "2027-01-03",
+        "direction": "IN", "amount": "1.00", "currency": "USD",
+    }, token, expected_statuses={409})
+    for domain in ("sales", "marketing", "property", "finance"):
+        status, overview = web_request(browser, f"/api/backend/api/v1/{domain}/overview")
+        assert status == 200 and overview["source"]["status"] == "CONNECTED"
+        assert overview["source"]["authoritative"] is True
+        assert overview["last_updated_at"] == overview["source"]["last_updated_at"]
+    executive_token = request("/api/v1/auth/login", payload={
+        "email": "strategy-executive@alos.test", "password": "integration-password",
+    })["access_token"]
+    executive = request("/api/v1/executive/overview", token=executive_token)
+    for domain in executive["domains"]:
+        assert domain["status"] == ("CONNECTED" if domain["domain"] in {"SALES", "PROPERTY", "FINANCE"}
+                                    else "UNAVAILABLE")
+    assert postgres_sql("SELECT outstanding_amount FROM finance.receivables "
+                        "WHERE reference='receivables' AND tenant_id='tenant_integration_001';") == "0.00"
+    print("Sales/Marketing, Property, Finance Web-Backend-PostgreSQL and Executive smoke passed")
+
+
 def strategy_smoke() -> None:
     """Prove the deterministic Strategy cascade through a fresh persisted session."""
     executive = {
@@ -737,7 +876,11 @@ def strategy_smoke() -> None:
     assert web_overview["domains"] == overview["domains"]
     print("Executive Web-Backend-PostgreSQL authoritative overview passed")
     expect_denied("/api/v1/executive/overview", None, editor_token, expected_statuses={403})
-    assert all(item["status"] == "UNAVAILABLE" for item in overview["domains"])
+    assert all(
+        item["status"] == ("CONNECTED_EMPTY" if item["domain"] in {"SALES", "PROPERTY", "FINANCE"}
+                           else "UNAVAILABLE")
+        for item in overview["domains"]
+    )
     details = next(item for item in overview["strategy_data"]["targets"]
                    if item["target"]["target_id"] == root_target_id)
     assert details["selected_observations"]["actual"]["value"] == "5"
@@ -1321,6 +1464,7 @@ def main() -> int:
 
     shared_work_smoke()
     strategy_smoke()
+    business_domains_smoke()
 
     bootstrap = request("/api/v1/integration/bootstrap", payload={}, token=token)
     run = {
