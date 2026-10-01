@@ -1129,7 +1129,6 @@ def main() -> int:
         "/api/v1/identity/accounts",
         {
             "employee_id": "employee_foreign_attempt",
-            "email": "cross-org@alos.test",
             "workspace_id": foreign_registration["workspace_id"],
             "role_refs": ["DIVISION_MEMBER"],
             "effective_at": "2026-01-01T00:00:00Z",
@@ -1141,7 +1140,6 @@ def main() -> int:
         "/api/v1/identity/accounts",
         {
             "employee_id": "employee_foreign_attempt",
-            "email": "cross-tenant@alos.test",
             "workspace_id": registration["workspace_id"],
             "role_refs": ["DIVISION_MEMBER"],
             "effective_at": "2026-01-01T00:00:00Z",
