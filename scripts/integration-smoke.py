@@ -680,7 +680,63 @@ def strategy_smoke() -> None:
     overview = request("/api/v1/executive/overview", token=token)
     assert overview["strategy"]["status"] == "CONNECTED"
     assert overview["strategy_data"]["active_operating_plans"][0]["plan_id"] == plan_id
-    assert overview["shared_work"]["status"] == "UNAVAILABLE"
+    assert overview["shared_work"]["status"] == "CONNECTED_EMPTY"
+    assert overview["shared_work"]["authoritative"] is True
+    assert overview["shared_work"]["last_updated_at"] is None
+    # Populate canonical Shared Work through its existing command authority.
+    editor = {**executive, "email": "executive-work-editor@alos.test",
+              "role_refs": ["DIVISION_LEAD"], "permission_refs": [
+                  "project.read", "project.create", "task.read", "task.create",
+                  "approval.read", "approval.request", "finding.read", "finding.create",
+                  "report.read", "report.create", "document.read", "document.create",
+              ]}
+    request("/api/v1/auth/register", payload=editor)
+    editor_token = request("/api/v1/auth/login", payload={
+        "email": editor["email"], "password": editor["password"],
+    })["access_token"]
+    project = request("/api/v1/projects", token=editor_token,
+                      payload={"code": "EXEC-SMOKE", "name": "Executive visible work"})
+    task = request("/api/v1/tasks", token=editor_token,
+                   payload={"title": "Executive visible task", "project_id": project["project_id"]})
+    approval = request("/api/v1/approvals", token=editor_token,
+                       payload={"subject_type": "TASK", "subject_id": task["task_id"]})
+    finding = request("/api/v1/work/findings", token=editor_token,
+                      payload={"title": "Canonical executive finding", "severity": "CRITICAL"})
+    request("/api/v1/work/reports/results", token=editor_token,
+            payload={"title": "Executive visible report", "report_type": "OPERATIONS"})
+    request("/api/v1/documents", token=editor_token, payload={
+        "title": "Executive visible document", "category": "GENERAL",
+        "data_classification": "INTERNAL",
+    })
+    overview = request("/api/v1/executive/overview", token=token)
+    assert overview["shared_work"]["status"] == "CONNECTED"
+    work = overview["shared_work_data"]
+    assert work["counts"]["projects"] == work["counts"]["tasks"] == 1
+    assert work["counts"]["pending_approvals"] == work["counts"]["critical_findings"] == 1
+    assert work["counts"]["reports"] == work["counts"]["documents"] == 1
+    assert work["approvals"][0]["approval_id"] == approval["approval_id"]
+    assert work["findings"][0]["finding_id"] == finding["finding_id"]
+    assert work["findings"][0]["severity"] == "CRITICAL"
+    assert work["last_updated_at"] == overview["shared_work"]["last_updated_at"]
+    executive_browser = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(CookieJar())
+    )
+    status, web_login = web_request(executive_browser, "/api/session/login", payload={
+        "email": executive["email"], "password": executive["password"],
+    })
+    assert status == 200 and isinstance(web_login, dict) and web_login["authenticated"]
+    status, web_overview = web_request(
+        executive_browser, "/api/backend/api/v1/executive/overview"
+    )
+    assert status == 200 and isinstance(web_overview, dict)
+    assert web_overview["workspace_id"] == executive["workspace_id"]
+    assert web_overview["strategy"] == overview["strategy"]
+    assert web_overview["shared_work"] == overview["shared_work"]
+    assert web_overview["shared_work_data"]["counts"] == work["counts"]
+    assert web_overview["shared_work_data"]["projects"][0]["project_id"] == project["project_id"]
+    assert web_overview["domains"] == overview["domains"]
+    print("Executive Web-Backend-PostgreSQL authoritative overview passed")
+    expect_denied("/api/v1/executive/overview", None, editor_token, expected_statuses={403})
     assert all(item["status"] == "UNAVAILABLE" for item in overview["domains"])
     details = next(item for item in overview["strategy_data"]["targets"]
                    if item["target"]["target_id"] == root_target_id)
