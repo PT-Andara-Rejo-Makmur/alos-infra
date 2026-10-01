@@ -819,8 +819,7 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
     resent_hash = hashlib.sha256(resent_credential.encode()).hexdigest()
     assert postgres_sql(
         "SELECT count(*) = 1 FROM core.activation_challenges "
-        f"WHERE challenge_id = 'activation_{expired_account['actor_id']}' "
-        f"AND token_hash = '{resent_hash}' AND expires_at > now();"
+        f"WHERE token_hash = '{resent_hash}' AND expires_at > now() AND consumed_at IS NULL;"
     ) == "t"
 
     suspended = request(
@@ -882,8 +881,9 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
     assert status == 200
     assert "Jika email terdaftar" in reset_request.get("message", "")
     assert postgres_sql(
-        "SELECT count(*) >= 1 FROM core.password_reset_challenges "
-        f"WHERE account_id = '{account['actor_id']}' AND consumed_at IS NULL;"
+        "SELECT count(*) >= 1 FROM core.password_reset_challenges prc "
+        "JOIN core.auth_accounts aa ON prc.account_id = aa.account_id "
+        f"WHERE aa.actor_id = '{account['actor_id']}' AND prc.consumed_at IS NULL;"
     ) == "t"
 
     reset_token = activation_credential(email)
@@ -900,8 +900,9 @@ def identity_lifecycle_smoke(registration: dict, admin_token: str) -> None:
     assert status == 200
     assert "Kata sandi berhasil diperbarui" in reset_confirm.get("message", "")
     assert postgres_sql(
-        "SELECT count(*) >= 1 FROM core.password_reset_challenges "
-        f"WHERE account_id = '{account['actor_id']}' AND consumed_at IS NOT NULL;"
+        "SELECT count(*) >= 1 FROM core.password_reset_challenges prc "
+        "JOIN core.auth_accounts aa ON prc.account_id = aa.account_id "
+        f"WHERE aa.actor_id = '{account['actor_id']}' AND prc.consumed_at IS NOT NULL;"
     ) == "t"
 
     # Old password fails
