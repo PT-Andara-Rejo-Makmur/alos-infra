@@ -104,11 +104,21 @@ services:
       ALOS_BACKEND_BASE_URL: http://backend:8000
       ALOS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN:?GENESIS_INTERNAL_TOKEN wajib diisi}
       ALOS_CONTRACTS_PATH: /contracts
-      DEFAULT_MODEL_ROUTE: disabled
+      DEFAULT_MODEL_ROUTE: ${DEFAULT_MODEL_ROUTE:-nine_router}
+      NINE_ROUTER_BASE_URL: ${NINE_ROUTER_BASE_URL:-http://103.93.135.49:20128/v1}
+      NINE_ROUTER_API_KEY: ${NINE_ROUTER_API_KEY:-}
+      NINE_ROUTER_TIMEOUT_SECONDS: ${NINE_ROUTER_TIMEOUT_SECONDS:-10}
+      NINE_ROUTER_MODEL_DEFAULT: ${NINE_ROUTER_MODEL_DEFAULT:-}
+      NINE_ROUTER_MODEL_FAST: ${NINE_ROUTER_MODEL_FAST:-}
+      NINE_ROUTER_MODEL_STANDARD: ${NINE_ROUTER_MODEL_STANDARD:-}
+      NINE_ROUTER_MODEL_REASONING: ${NINE_ROUTER_MODEL_REASONING:-}
+      NINE_ROUTER_MODEL_CODING: ${NINE_ROUTER_MODEL_CODING:-}
+      NINE_ROUTER_MODEL_CRITICAL: ${NINE_ROUTER_MODEL_CRITICAL:-}
+      NINE_ROUTER_MAXIMUM_CLASSIFICATION: ${NINE_ROUTER_MAXIMUM_CLASSIFICATION:-INTERNAL}
       OTEL_SERVICE_NAME: genesis-ai-staging
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     expose: ["8100"]
-    networks: [internal]
+    networks: [internal, model-egress]
     read_only: true
     tmpfs: [/tmp]
     security_opt:
@@ -165,6 +175,8 @@ services:
     restart: unless-stopped
 
 networks:
+  model-egress:
+    driver: bridge
   edge:
   internal:
     internal: true

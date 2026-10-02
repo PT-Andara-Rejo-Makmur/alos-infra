@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -23,15 +24,20 @@ from alos.config import Settings as BackendSettings  # noqa: E402
 from alos.dependencies import get_tool_registry  # noqa: E402
 from alos.main import create_app as backend_app  # noqa: E402
 from alos.memory import MemoryRecord  # noqa: E402
+from alos.registry import RegistryEntry, RegistryState  # noqa: E402
+from alos.tools.business.catalog import BUSINESS_TOOLS  # noqa: E402
 from genesis.config import Settings as GenesisSettings  # noqa: E402
 from genesis.main import create_app as genesis_app  # noqa: E402
 
 
-async def main() -> None:
+async def main(*, production_mock: bool = False) -> None:
     runtime_results: dict[str, dict] = {}
 
     async def inspect_response(result: httpx.Response) -> None:
-        if result.request.url.path.endswith("/agent-runs") and result.status_code == 200:
+        if (
+            result.request.url.path.endswith("/agent-runs")
+            and result.status_code == 200
+        ):
             await result.aread()
             payload = result.json()
             runtime_results[payload["run_id"]] = payload
@@ -65,6 +71,9 @@ async def main() -> None:
             ALOS_BACKEND_BASE_URL="http://backend.test",
             ALOS_INTERNAL_TOKEN="ara-test-service-token",
             ENABLE_TEST_RUNTIME=True,
+            DEFAULT_MODEL_ROUTE="nine_router" if production_mock else "disabled",
+            NINE_ROUTER_BASE_URL="http://router.test/v1" if production_mock else "",
+            NINE_ROUTER_API_KEY=uuid4().hex if production_mock else "",
         )
     )
     async with (
@@ -133,6 +142,175 @@ async def main() -> None:
         )
         other = await account("other", ["DIVISION_MEMBER"], ["sales.read"], "WORKSPACE")
         results: list[str] = []
+        provider_mode = {"value": "normal"}
+        provider_calls: list[dict] = []
+
+        async def router_mock(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json={"data": [{"id": "fixture-model"}]})
+            document = json.loads(request.content)
+            provider_calls.append(document)
+            if provider_mode["value"] == "outage":
+                return httpx.Response(503)
+            message = document["messages"][-1]["content"]
+            if "ContextBundle:" in message:
+                bundle = json.loads(message.split("ContextBundle:", 1)[1])
+                evidence_id = bundle["evidence_refs"][0]["evidence_id"]
+                decision = {
+                    "findings": [
+                        {
+                            "finding_id": "finding.provider.evidence",
+                            "statement": "Current canonical evidence was analyzed.",
+                            "confidence": 1,
+                            "evidence_ids": [evidence_id],
+                        }
+                    ],
+                    "recommendations": [
+                        {
+                            "recommendation_id": "recommendation.provider.review",
+                            "summary": "Review current evidence",
+                            "recommended_action": "Human review",
+                            "confidence": 1,
+                            "finding_ids": ["finding.provider.evidence"],
+                            "evidence_ids": [evidence_id],
+                            "backlog_candidate": True,
+                        }
+                    ],
+                    "limitations": ["Mock provider acceptance only"],
+                }
+            else:
+                data = json.loads(message)
+                observed = {item["tool_id"] for item in data["observations"]}
+                unread = [
+                    tool for tool in data["allowed_tool_ids"] if tool not in observed
+                ]
+                if provider_mode["value"] == "admin":
+                    decision = {
+                        "kind": "TOOL",
+                        "tool_intent": {"tool_id": "admin.approve", "arguments": {}},
+                    }
+                elif unread:
+                    decision = {
+                        "kind": "TOOL",
+                        "tool_intent": {
+                            "tool_id": unread[0],
+                            "arguments": data["tool_arguments"].get(unread[0], {}),
+                        },
+                    }
+                elif not data["allowed_tool_ids"]:
+                    decision = {"kind": "NEEDS_INFO"}
+                else:
+                    claims = [
+                        {
+                            "tool_id": item["tool_id"],
+                            "pointer": "/data",
+                            "value": item["output"]["data"],
+                        }
+                        for item in data["observations"]
+                    ]
+                    if provider_mode["value"] == "fabrication":
+                        claims[0]["value"] = {"revenue": 999999999}
+                    decision = {
+                        "kind": "FINISH",
+                        "requires_evidence": True,
+                        "evidence_ids": data["evidence_ids"],
+                        "output": {"claims": claims},
+                    }
+            content = (
+                "invalid model JSON"
+                if provider_mode["value"] == "malformed"
+                else json.dumps(decision)
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "request_fixture_" + uuid4().hex,
+                    "choices": [{"message": {"content": content}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+                },
+            )
+
+        if production_mock:
+            genesis.state.provider_http_client = httpx.AsyncClient(
+                transport=httpx.MockTransport(router_mock)
+            )
+            # Simulate committed release snapshots ONLY in disposable acceptance. Production code
+            # does not create/approve/activate definitions or manufacture human decisions.
+            for token in (sales, executive, other):
+                actor = (
+                    await client.post(
+                        "/api/v1/ara/threads",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json={},
+                    )
+                ).json()
+                for agent_id in ("ara.workspace-assistant", "ara.business-reader"):
+                    budget = {
+                        "max_steps": 16,
+                        "max_tool_calls": 12,
+                        "max_tokens": 12000,
+                        "timeout_seconds": 30,
+                        "max_depth": 1,
+                        "max_children": 1,
+                        "concurrency_limit": 1,
+                    }
+                    definition = {
+                        "agent_id": agent_id,
+                        "agent_version": "1.0.0",
+                        "name": "ARA",
+                        "purpose": "Read authorized canonical evidence",
+                        "owner_actor_id": actor["actor_id"],
+                        "risk_level": "LOW",
+                        "capability_ids": ["business.question_answering"],
+                        "skill_refs": [],
+                        "model_policy_ref": "ara.production",
+                        "tool_ids": list(BUSINESS_TOOLS),
+                        "permission_refs": [],
+                        "scope_refs": ["scope.ara.business"],
+                        "execution_budget": budget,
+                        "input_schema": {"type": "object"},
+                        "output_schema": {"type": "object"},
+                        "delegation_policy": {
+                            "enabled": True,
+                            "max_depth": 1,
+                            "max_children": 1,
+                        },
+                    }
+                    entry = RegistryEntry(
+                        subject_type="agent",
+                        subject_id=agent_id,
+                        version="1.0.0",
+                        tenant_id=actor["tenant_id"],
+                        organization_id=actor["organization_id"],
+                        workspace_id=actor["workspace_id"],
+                        payload=definition,
+                        digest=hashlib.sha256(
+                            json.dumps(
+                                definition, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ).hexdigest(),
+                        state=RegistryState.ACTIVE,
+                        created_by=actor["actor_id"],
+                        correlation_id="corr_acceptance_release",
+                        created_at=datetime.now(UTC),
+                        decision_id="decision.acceptance.fixture",
+                        release_id="release.acceptance.fixture",
+                    )
+                    await backend.state.factory_agent_registry.publish_committed(entry)
+            backend.state.settings.ENABLE_TEST_TOOLS = False
+            genesis.state.settings.ENABLE_TEST_RUNTIME = False
+            readiness = await client.get(
+                "/api/v1/ara/authority", headers={"Authorization": f"Bearer {sales}"}
+            )
+            assert readiness.status_code == 200, readiness.text
+            assert (
+                readiness.json()["runtime_mode"] == "NORMAL"
+                and readiness.json()["production_provider_connected"]
+                and readiness.json()["service_available"]
+            ), readiness.text
+            results.append(
+                "Authoritative CONNECTED readiness; NORMAL mode; released fixture authority: PASS"
+            )
 
         async def ask(token: str, message: str, expected: str) -> dict:
             headers = {
@@ -159,6 +337,11 @@ async def main() -> None:
                                     "error_code": item.error_code,
                                 }
                                 for item in records[-1:]
+                            ],
+                            "runtime_errors": [
+                                {"status": item["status"], "error": item.get("error")}
+                                for item in runtime_results.values()
+                                if item["status"] != "COMPLETED"
                             ],
                         },
                         default=str,
@@ -247,9 +430,10 @@ async def main() -> None:
         ranks = {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "RESTRICTED": 3}
         child_context = child_record.request["execution_context"]
         parent_context = parent_record.request["execution_context"]
-        assert ranks[child_context["data_classification"]] <= ranks[
-            parent_context["data_classification"]
-        ]
+        assert (
+            ranks[child_context["data_classification"]]
+            <= ranks[parent_context["data_classification"]]
+        )
         assert all(
             value <= parent_context["execution_budget"][key]
             for key, value in child_context["execution_budget"].items()
@@ -443,6 +627,29 @@ async def main() -> None:
         ]
         assert "Belum ada data" not in failed["answer"]
         adapter.execute = original
+        if production_mock:
+            for mode in ("admin", "malformed", "fabrication", "outage"):
+                provider_mode["value"] = mode
+                failed = await ask(sales, "Tampilkan lead Sales", "FAILED")
+                assert failed["sources"] == [] and "999999999" not in failed["answer"]
+                results.append(
+                    f"Production model {mode}: fail closed, no fabricated response: PASS"
+                )
+            provider_mode["value"] = "normal"
+            assert provider_calls and all(
+                set(call) == {"model", "messages", "max_tokens", "stream"}
+                for call in provider_calls
+            )
+            assert all(
+                item.get("usage", {}).get("cost_telemetry") == "UNAVAILABLE"
+                for item in runtime_results.values()
+                if item["status"] == "COMPLETED"
+                and item.get("usage", {}).get("provider_request_ids")
+            )
+            results.append(
+                "9Router-only production transport; real usage; unknown cost stays unavailable: PASS"
+            )
+            await genesis.state.provider_http_client.aclose()
         thread = (
             await client.post("/api/v1/ara/threads", headers=headers, json={})
         ).json()
@@ -475,4 +682,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(production_mock="--production-mock" in sys.argv))

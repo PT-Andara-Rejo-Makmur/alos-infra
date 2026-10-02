@@ -365,8 +365,25 @@ def test_topology() -> None:
         assert not environment["EMAIL_FROM"]
     print("  [PASS] 26. Staging/production explicitly use provider-neutral SMTP; no test email provider")
 
+    # 27. The external router credential belongs only to GENESIS; no installed router service.
+    for compose in (app_json, genesis_json, staging_json):
+        for name, service in compose.get("services", {}).items():
+            assert "9router" not in name.lower() and "nine-router" not in name.lower()
+            environment = service.get("environment", {})
+            if name != "genesis":
+                assert not any(key.startswith("NINE_ROUTER_") for key in environment)
+            else:
+                assert "NINE_ROUTER_API_KEY" in environment
+                assert environment["NINE_ROUTER_BASE_URL"].endswith("/v1")
+                assert "DATABASE_URL" not in environment
+    assert "model-egress" in staging_json["services"]["genesis"]["networks"]
+    assert "model-egress" not in staging_json["services"]["postgres"]["networks"]
+    for example in (genesis_env_file, staging_env_file):
+        assert "NINE_ROUTER_API_KEY=\n" in example.read_text(encoding="utf-8")
+    print("  [PASS] 27. External model gateway has GENESIS-only credential and isolated egress")
+
     print("\n================================================================================")
-    print("SELURUH 26 INVARIANT TOPOLOGI, KEAMANAN, DAN OPERASIONAL 4 VPS SUKSES TERVERIFIKASI!")
+    print("SELURUH 27 INVARIANT TOPOLOGI, KEAMANAN, DAN OPERASIONAL 4 VPS SUKSES TERVERIFIKASI!")
     print("================================================================================")
 
 
