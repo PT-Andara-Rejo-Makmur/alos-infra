@@ -103,6 +103,9 @@ jobs:
       - name: Jalankan integration smoke
         run: python3 scripts/integration-smoke.py
 
+      - name: Verifikasi ARA governed business roundtrip
+        run: python3 scripts/ara-smoke.py
+
       - name: Verifikasi persistence authoritative
         run: |
           set -euo pipefail

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression test suite for ALOS multi-host 4 VPS infrastructure topology.
 
-Validates all invariant requirements defined in ALOS Infra MVP2.
+Validates all invariant requirements defined in the governed ALOS deployment topology.
 """
 
 from __future__ import annotations
