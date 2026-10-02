@@ -488,6 +488,7 @@ def business_domains_smoke() -> None:
             "property.read", "property.write", "finance.read", "finance.write",
             "legal.read", "legal.write", "hr.read", "hr.write", "it.read", "it.write",
             "project.read", "project.create", "document.read", "document.create",
+            "approval.read", "approval.request", "approval.approve",
         ], "scope_refs": [], "data_scope": "WORKSPACE",
     }
     request("/api/v1/auth/register", payload=owner)
@@ -533,7 +534,7 @@ def business_domains_smoke() -> None:
     assert status == 200 and units["items"][0]["property_unit_id"] == unit["property_unit_id"]
     booking = create("sales", "bookings", {
         "customer_id": customer["customer_id"], "property_unit_id": unit["property_unit_id"],
-        "booking_date": "2027-01-01",
+        "booking_date": "2027-01-01", "amount": "10.25",
     })
     expect_denied(f"/api/v1/sales/bookings/{booking['booking_id']}/transition",
                   {"status": "CONFIRMED"}, token, expected_statuses={409})
@@ -671,6 +672,65 @@ def business_domains_smoke() -> None:
     release = create("it", "releases", {"version": "recorded-inventory"})
     expect_denied(f"/api/v1/it/releases/{release['it_release_id']}/transition",
                   {"status": "RELEASED"}, token, expected_statuses={422})
+    facility = create("hr", "facility-requests", {
+        "facility_code": "OFFICE", "title": "Recorded facility request",
+    })
+    transition("hr", "facility-requests", facility["facility_request_id"], "IN_PROGRESS")
+    inventory = create("hr", "inventory-items", {
+        "asset_code": "GA-SMOKE", "name": "Recorded internal asset", "condition": "UNKNOWN",
+        "recorded_on": "2026-01-01",
+    })
+    create("hr", "asset-handovers", {
+        "inventory_item_id": inventory["inventory_item_id"], "employee_id": employee["employee_id"],
+        "handover_on": "2026-01-01", "event": "GIVEN", "notes": "Explicit handover evidence",
+    })
+    create("hr", "maintenance-records", {
+        "inventory_item_id": inventory["inventory_item_id"], "performed_on": "2026-01-01",
+        "summary": "Recorded inspection", "result": "UNRESOLVED",
+    })
+    create("hr", "service-assessments", {
+        "facility_code": "OFFICE", "assessed_on": "2026-01-01", "readiness": "UNKNOWN",
+        "notes": "Readiness has not been verified",
+    })
+    review = create("legal", "legal-reviews", {
+        "contract_id": contract["contract_id"], "title": "Recorded legal assessment",
+        "assessment": "INCONCLUSIVE", "review_summary": "Independent from business approval",
+    })
+    transition("legal", "legal-reviews", review["legal_review_id"], "IN_REVIEW")
+    transition("legal", "legal-reviews", review["legal_review_id"], "REVIEWED")
+
+    # Request, independent review and explicit execution all pass through real Web sessions.
+    reviewer = {**owner, "email": "business-reviewer@alos.test",
+                "display_name": "Independent business reviewer"}
+    request("/api/v1/auth/register", payload=reviewer)
+    reviewer_browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+    assert web_request(reviewer_browser, "/api/session/login", payload={
+        "email": reviewer["email"], "password": reviewer["password"],
+    })[0] == 200
+    status, approval = web_request(browser, "/api/backend/api/v1/approvals", payload={
+        "subject_type": "SALES_BOOKING", "subject_id": booking["booking_id"],
+        "requested_action": "CONFIRM_BOOKING", "reason": "Recorded material action",
+    })
+    assert status == 201 and approval["status"] == "PENDING"
+    decision_path = f"/api/backend/api/v1/approvals/{approval['approval_id']}/approve"
+    expect_web_error(browser, decision_path, 403, payload={})
+    transition_path = f"/api/backend/api/v1/sales/bookings/{booking['booking_id']}/transition"
+    execution = {"status": "CONFIRMED", "approval_id": approval["approval_id"]}
+    expect_web_error(browser, transition_path, 409, payload=execution)
+    status, decided = web_request(reviewer_browser, decision_path, payload={})
+    assert status == 200 and decided["status"] == "APPROVED"
+    status, before_execution = web_request(browser,
+        f"/api/backend/api/v1/sales/bookings/{booking['booking_id']}")
+    assert status == 200 and before_execution["status"] == "PENDING"
+    status, executed = web_request(browser, transition_path, payload=execution)
+    assert status == 200 and executed["status"] == "CONFIRMED"
+    expect_web_error(browser, transition_path, 409, payload=execution)
+    assert postgres_sql("SELECT count(*) FROM core.work_approvals "
+        f"WHERE approval_id='{approval['approval_id']}' AND requested_action='CONFIRM_BOOKING' "
+        "AND consumed_at IS NOT NULL AND consumed_by IS NOT NULL AND transition_ref IS NOT NULL;") == "1"
+    assert postgres_sql("SELECT count(*) >= 1 FROM audit.audit_records "
+        f"WHERE entity_id='{approval['approval_id']}' AND event_type='approval.consumed';") == "t"
+    print("Action-scoped material approval, independent Web reviewer and replay protection passed")
     for domain, resource, values in (
         ("legal", "contracts", {"contract_number": "forbidden"}),
         ("hr", "employees", {"full_name": "forbidden"}),
