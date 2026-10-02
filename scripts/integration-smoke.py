@@ -1600,6 +1600,20 @@ def main() -> int:
                     continue
                 raise
         assert run_id is not None
+        # Cancel after the diagnostic tool completed. Cancelling between the
+        # runtime probe and ToolExecutor authorization legitimately denies the
+        # tool, so that race cannot prove the post-tool cancellation boundary.
+        for _ in range(50):
+            completed_tool = postgres_sql(
+                "SELECT EXISTS (SELECT 1 FROM audit.audit_records "
+                "WHERE event_type='tool.execution' AND outcome='SUCCESS' "
+                f"AND correlation_id='{cancellation_correlation}');"
+            )
+            if completed_tool == "t":
+                break
+            assert not pending.done(), "Diagnostic run finished before cancellation barrier"
+            time.sleep(0.02)
+        assert completed_tool == "t", "Diagnostic completion evidence is missing"
         cancelled = request(
             f"/api/v1/agent-runs/{run_id}/cancellation",
             payload={"reason": "deterministic integration cancellation"},
@@ -1608,7 +1622,7 @@ def main() -> int:
         )
         assert cancelled["status"] == "CANCEL_REQUESTED"
         cancelled_result = pending.result(timeout=30)
-    assert cancelled_result["status"] == "CANCELLED"
+    assert cancelled_result["status"] == "CANCELLED", cancelled_result
     assert cancelled_result["correlation_id"] == cancellation_correlation
 
     factory = request(
