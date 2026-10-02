@@ -72,7 +72,8 @@ def main():
     )
     authority = web("sales", root + "/authority")
     assert (
-        authority["service_available"]
+        authority["status"] == "ACTIVE"
+        and authority["service_available"]
         and authority["maximum_data_classification"] == "INTERNAL"
     )
     assert authority["production_provider_connected"] is False
@@ -85,6 +86,23 @@ def main():
     assert {row["tool_id"] for row in answer["response"]["sources"]} == {
         "sales.lead.list"
     }
+    for source in answer["response"]["sources"]:
+        evidence = source["evidence_ref"]
+        assert all(
+            evidence.get(field)
+            for field in (
+                "evidence_id",
+                "source_id",
+                "run_id",
+                "correlation_id",
+                "captured_at",
+                "content_hash",
+            )
+        )
+        assert evidence["run_id"] == answer["run_id"]
+        assert evidence["correlation_id"] == answer["correlation_id"]
+        assert evidence["freshness"] == "CURRENT"
+        assert evidence["instruction_authority"] is False
     assert "action_proposal" not in answer["response"]
     history = web("sales", path)
     assert len(history) == 2 and history[-1]["response"] == answer["response"]
@@ -103,6 +121,10 @@ def main():
         smoke.expect_web_error(browsers["other"], hidden, 404)
     for field in (
         "tenant_id",
+        "organization_id",
+        "actor_id",
+        "workspace_id",
+        "permission_refs",
         "scope_refs",
         "allowed_tool_ids",
         "classification",

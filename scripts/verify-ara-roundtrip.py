@@ -28,7 +28,13 @@ from genesis.main import create_app as genesis_app  # noqa: E402
 
 
 async def main() -> None:
+    runtime_results: dict[str, dict] = {}
+
     async def inspect_response(result: httpx.Response) -> None:
+        if result.request.url.path.endswith("/agent-runs") and result.status_code == 200:
+            await result.aread()
+            payload = result.json()
+            runtime_results[payload["run_id"]] = payload
         if result.status_code >= 400 and result.request.url.host == "genesis.test":
             await result.aread()
             print("GENESIS boundary error:", result.text)
@@ -238,6 +244,16 @@ async def main() -> None:
             ]
             == 1000
         )
+        ranks = {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "RESTRICTED": 3}
+        child_context = child_record.request["execution_context"]
+        parent_context = parent_record.request["execution_context"]
+        assert ranks[child_context["data_classification"]] <= ranks[
+            parent_context["data_classification"]
+        ]
+        assert all(
+            value <= parent_context["execution_budget"][key]
+            for key, value in child_context["execution_budget"].items()
+        )
         async with backend.state.database.session_factory() as session:
             assert (
                 await session.scalar(
@@ -345,6 +361,11 @@ async def main() -> None:
         release.set()
         cancelled = await pending
         assert cancelled.json()["status"] == "CANCELLED", cancelled.text
+        cancelled_id = rows[-1]["run_id"]
+        assert runtime_results[cancelled_id]["status"] == "CANCELLED"
+        assert (
+            await backend.state.agent_run_authority.get(cancelled_id)
+        ).status.value == "CANCELLED"
         adapter.execute = original
         results.append(
             "Backend cancellation -> GENESIS runtime -> Tool boundary: CANCELLED, never COMPLETED: PASS"
@@ -401,6 +422,10 @@ async def main() -> None:
         ), cancelled.text
         assert (
             await backend.state.agent_run_authority.get(children[0].run_id)
+        ).status.value == "CANCELLED"
+        assert runtime_results[children[0].run_id]["status"] == "CANCELLED"
+        assert (
+            await backend.state.agent_run_authority.get(root_id)
         ).status.value == "CANCELLED"
         child_adapter.execute = child_original
         results.append(
