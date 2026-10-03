@@ -59,6 +59,7 @@ services:
       GENESIS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN:?GENESIS_INTERNAL_TOKEN wajib diisi}
       CORS_ALLOWED_ORIGINS: https://${WEB_HOSTNAME:?WEB_HOSTNAME wajib diisi}
       ALOS_CONTRACTS_PATH: /contracts
+      DOCUMENT_OBJECT_ROOT: /data/documents
       OTEL_SERVICE_NAME: alos-backend-staging
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-}
@@ -73,6 +74,8 @@ services:
       SMTP_USE_TLS: "${SMTP_USE_TLS:-true}"
       SMTP_TIMEOUT_SECONDS: "${SMTP_TIMEOUT_SECONDS:-10}"
       APP_PUBLIC_URL: "${APP_PUBLIC_URL:-}"
+    volumes:
+      - document-objects:/data/documents
     expose: ["8000"]
     networks: [edge, internal, data]
     depends_on:
@@ -94,6 +97,32 @@ services:
         limits:
           cpus: "1.00"
           memory: 1.5G
+
+  jobs-worker:
+    image: ${ALOS_BACKEND_IMAGE:?ALOS_BACKEND_IMAGE wajib diisi}
+    command: ["python", "-m", "alos.jobs.runner"]
+    environment:
+      APP_ENV: staging
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ALOS_CONTRACTS_PATH: /contracts
+      DOCUMENT_OBJECT_ROOT: /data/documents
+    networks: [data]
+    volumes:
+      - document-objects:/data/documents
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
 
   genesis:
     image: ${GENESIS_IMAGE:?GENESIS_IMAGE wajib diisi}
@@ -187,3 +216,4 @@ volumes:
   caddy-data:
   caddy-config:
   postgres-data:
+  document-objects:

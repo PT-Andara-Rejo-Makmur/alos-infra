@@ -131,7 +131,7 @@ jobs:
           bash -n database/restore/restore.sh
           bash -n database/migration/migrate.sh
           pwsh -NoProfile -Command '$errors = @(); Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { $tokens = $null; $parseErrors = $null; [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null; $errors += $parseErrors }; if ($errors.Count) { $errors | Format-List; exit 1 }'
-          python3 -m py_compile scripts/verify-infra-topology.py scripts/preflight-check.py scripts/test-restore-proof.py scripts/ara-smoke.py scripts/verify-ara-roundtrip.py
+          python3 -m py_compile scripts/verify-infra-topology.py scripts/preflight-check.py scripts/test-restore-proof.py scripts/test-business-worker.py scripts/ara-smoke.py scripts/verify-ara-roundtrip.py
 
       - name: Uji automated restore proof pada disposable PostgreSQL
         shell: bash

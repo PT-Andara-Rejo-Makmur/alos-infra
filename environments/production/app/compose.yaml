@@ -65,6 +65,7 @@ services:
       GENESIS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN:?GENESIS_INTERNAL_TOKEN wajib diisi}
       CORS_ALLOWED_ORIGINS: "https://${WEB_HOSTNAME:?WEB_HOSTNAME wajib diisi}"
       ALOS_CONTRACTS_PATH: /contracts
+      DOCUMENT_OBJECT_ROOT: /data/documents
       OTEL_SERVICE_NAME: alos-backend-production
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-}
@@ -81,6 +82,8 @@ services:
       APP_PUBLIC_URL: "${APP_PUBLIC_URL:-}"
     ports:
       - "${APP_PRIVATE_BIND_IP:?APP_PRIVATE_BIND_IP wajib diisi}:${ALOS_BACKEND_PORT:-8000}:8000"
+    volumes:
+      - document-objects:/data/documents
     expose: ["8000"]
     networks: [edge]
     read_only: true
@@ -102,9 +105,36 @@ services:
           cpus: "2.00"
           memory: 2G
 
+  jobs-worker:
+    image: ${ALOS_BACKEND_IMAGE:?Gunakan immutable ALOS_BACKEND_IMAGE}
+    command: ["python", "-m", "alos.jobs.runner"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: "${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:?POSTGRES_USER wajib diisi}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD wajib diisi}@${DATABASE_PRIVATE_HOST:?DATABASE_PRIVATE_HOST wajib diisi}:${DATABASE_PORT:-5432}/${POSTGRES_DB:?POSTGRES_DB wajib diisi}}"
+      ALOS_CONTRACTS_PATH: /contracts
+      DOCUMENT_OBJECT_ROOT: /data/documents
+    networks: [edge]
+    volumes:
+      - document-objects:/data/documents
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+
 networks:
   edge:
 
 volumes:
   caddy-data:
   caddy-config:
+  document-objects:

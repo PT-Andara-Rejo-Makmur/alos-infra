@@ -85,12 +85,21 @@ def test_topology() -> None:
     data_json = run_compose_config_json(data_compose_file, data_env_file)
     staging_json = run_compose_config_json(staging_compose_file, staging_env_file)
 
-    # 1. production APP compose hanya memiliki Caddy/Web/Backend
+    # Backend worker shares the application host and never exposes a listener.
     app_services = set(app_json.get("services", {}).keys())
-    assert app_services == {"caddy", "web", "backend"}, (
-        f"Req 1 GAGAL: Production APP compose harus memiliki tepat [caddy, web, backend], aktual: {app_services}"
+    assert app_services == {"caddy", "web", "backend", "jobs-worker"}, (
+        f"Production APP services tidak sesuai: {app_services}"
     )
-    print("  [PASS] 1. Production APP compose hanya memiliki Caddy/Web/Backend")
+    worker = app_json["services"]["jobs-worker"]
+    assert worker["image"] == app_json["services"]["backend"]["image"]
+    assert not worker.get("ports") and not worker.get("expose")
+    assert "GENESIS_INTERNAL_TOKEN" not in worker["environment"]
+    assert worker["environment"]["DATABASE_URL"] == app_json["services"]["backend"]["environment"]["DATABASE_URL"]
+    for configuration in (app_json, staging_json):
+        for service_name in ("backend", "jobs-worker"):
+            volumes = configuration["services"][service_name]["volumes"]
+            assert any(volume["target"] == "/data/documents" and volume["type"] == "volume" for volume in volumes)
+    print("  [PASS] Backend worker dan penyimpanan dokumen terisolasi")
 
     # 2. production GENESIS compose hanya memiliki GENESIS
     genesis_services = set(genesis_json.get("services", {}).keys())

@@ -39,6 +39,7 @@ services:
       GENESIS_BASE_URL: http://genesis:8100
       GENESIS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN:?}
       ALOS_CONTRACTS_PATH: /contracts
+      DOCUMENT_OBJECT_ROOT: /data/documents
       ENABLE_TEST_TOOLS: "true"
       ENABLE_TEST_REGISTRATION: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
@@ -48,6 +49,7 @@ services:
       - "127.0.0.1:${ALOS_BACKEND_PORT:-8000}:8000"
     networks: [edge, internal, data]
     volumes:
+      - document-objects:/data/documents
       - ../../../alos-contracts:/contracts:ro
       - ../../scripts/integration_backend.py:/integration/integration_backend.py:ro
     depends_on:
@@ -59,6 +61,37 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  jobs-worker:
+    build:
+      context: ../../../alos-backend
+      dockerfile: Dockerfile
+      additional_contexts:
+        contracts: ../../../alos-contracts
+    command: ["python", "-m", "alos.jobs.runner"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      ALOS_CONTRACTS_PATH: /contracts
+      DOCUMENT_OBJECT_ROOT: /data/documents
+    networks: [data]
+    volumes:
+      - document-objects:/data/documents
+      - ../../../alos-contracts:/contracts:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
 
   genesis:
     build:
@@ -125,3 +158,6 @@ networks:
     internal: true
   data:
     internal: true
+
+volumes:
+  document-objects:
