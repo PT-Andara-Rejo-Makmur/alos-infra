@@ -660,7 +660,7 @@ def business_domains_smoke() -> None:
         "start_date": "2027-01-01", "end_date": "2027-01-02",
     })
     expect_denied(f"/api/v1/hr/leave-requests/{leave['leave_request_id']}/transition",
-                  {"status": "APPROVED"}, token, expected_statuses={422})
+                  {"status": "APPROVED"}, token, expected_statuses={403})
     system = create("it", "systems", {
         "system_code": "IT-SMOKE", "name": "Recorded system", "criticality": "HIGH",
     })
