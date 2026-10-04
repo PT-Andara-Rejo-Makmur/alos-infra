@@ -46,6 +46,18 @@ services:
       ENABLE_TEST_TOOLS: "true"
       OTEL_SERVICE_NAME: alos-backend
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
+      EMAIL_FROM: ${EMAIL_FROM:-support@andaraimperialhub.com}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-ALOS}
+      SMTP_HOST: ${SMTP_HOST:-smtp.hostinger.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-support@andaraimperialhub.com}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:3000}
     ports:
       - "127.0.0.1:${ALOS_BACKEND_PORT:-8000}:8000"
     networks: [edge, internal, data]
@@ -75,7 +87,17 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       ALOS_CONTRACTS_PATH: /contracts
       DOCUMENT_OBJECT_ROOT: /data/documents
-    networks: [data]
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
+      EMAIL_FROM: ${EMAIL_FROM:-support@andaraimperialhub.com}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-ALOS}
+      SMTP_HOST: ${SMTP_HOST:-smtp.hostinger.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-support@andaraimperialhub.com}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:3000}
+    networks: [data, edge]
     volumes:
       - document-objects:/data/documents
       - ../../../alos-contracts:/contracts:ro
