@@ -12,6 +12,7 @@ services:
     environment:
       NEXT_PUBLIC_ALOS_API_BASE_URL: http://127.0.0.1:${ALOS_BACKEND_PORT:-8000}
       ALOS_BACKEND_INTERNAL_URL: http://backend:8000
+      ALOS_SESSION_COOKIE_SECURE: "false"
     ports:
       - "127.0.0.1:${ALOS_WEB_PORT:-3000}:3000"
     networks: [edge]
@@ -43,7 +44,7 @@ services:
       CORS_ALLOWED_ORIGINS: http://127.0.0.1:${ALOS_WEB_PORT:-3000},http://localhost:${ALOS_WEB_PORT:-3000}
       ALOS_CONTRACTS_PATH: /contracts
       DOCUMENT_OBJECT_ROOT: /data/documents
-      ENABLE_TEST_TOOLS: "true"
+      ENABLE_TEST_TOOLS: ${ENABLE_TEST_TOOLS:-false}
       OTEL_SERVICE_NAME: alos-backend
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-}
@@ -128,8 +129,9 @@ services:
       APP_PORT: 8100
       ALOS_BACKEND_BASE_URL: http://backend:8000
       ALOS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN}
+      ENABLE_TEST_RUNTIME: ${ENABLE_TEST_RUNTIME:-false}
       DEFAULT_MODEL_ROUTE: ${DEFAULT_MODEL_ROUTE:-disabled}
-      NINE_ROUTER_BASE_URL: ${NINE_ROUTER_BASE_URL:-http://103.93.135.49:20128/v1}
+      NINE_ROUTER_BASE_URL: ${NINE_ROUTER_BASE_URL:-}
       NINE_ROUTER_API_KEY: ${NINE_ROUTER_API_KEY:-}
       NINE_ROUTER_TIMEOUT_SECONDS: ${NINE_ROUTER_TIMEOUT_SECONDS:-10}
       NINE_ROUTER_MODEL_DEFAULT: ${NINE_ROUTER_MODEL_DEFAULT:-}
@@ -155,7 +157,8 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: pgvector/pgvector:pg16
+    build:
+      context: ../../database
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -174,7 +177,7 @@ services:
     restart: unless-stopped
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.135.0
+    image: otel/opentelemetry-collector:0.162.0@sha256:310a800ad69ee430e7c541796852a242c9c7db97aaad4daa5ccf843c525fbdb2
     command: ["--config=/etc/otelcol/config.yaml"]
     expose: ["4317", "4318"]
     networks: [internal]

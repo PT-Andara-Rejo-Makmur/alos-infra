@@ -73,6 +73,9 @@ jobs:
           } | tee /tmp/alos-integration-sources.md
           cat /tmp/alos-integration-sources.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Validasi referensi dokumentasi lima repository
+        run: python3 scripts/verify-documentation.py
+
       - name: Validasi topology integration
         run: |
           set -euo pipefail
@@ -105,6 +108,42 @@ jobs:
 
       - name: Verifikasi ARA governed business roundtrip
         run: python3 scripts/ara-smoke.py
+
+      - name: Siapkan pnpm untuk browser E2E
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - name: Siapkan Node.js untuk browser E2E
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: workspace/alos-web/pnpm-lock.yaml
+
+      - name: Uji dashboard dan ARA melalui browser
+        working-directory: workspace/alos-web
+        env:
+          ALOS_E2E_WEB_URL: http://127.0.0.1:3000
+          ALOS_E2E_BACKEND_URL: http://127.0.0.1:8000
+          ALOS_E2E_ALLOW_TEST_REGISTRATION: "1"
+          ALOS_E2E_DISPOSABLE_STACK: "1"
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e
+
+      - name: Simpan bukti browser E2E
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alos-browser-e2e
+          path: |
+            workspace/alos-web/playwright-report
+            workspace/alos-web/test-results
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Verifikasi production model melalui router mock dan PostgreSQL
         run: |

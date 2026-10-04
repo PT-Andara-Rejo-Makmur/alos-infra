@@ -90,7 +90,7 @@ Repository ini menyediakan konfigurasi terisolasi:
 Set-Location environments\local
 Copy-Item .env.example .env
 # Isi POSTGRES_PASSWORD dan GENESIS_INTERNAL_TOKEN dengan nilai development lokal.
-docker compose config
+docker compose config --quiet
 docker compose up --build -d
 ..\..\scripts\health-check.ps1
 ```
@@ -100,7 +100,7 @@ docker compose up --build -d
 cd environments/local
 cp .env.example .env
 # Isi POSTGRES_PASSWORD dan GENESIS_INTERNAL_TOKEN dengan nilai development lokal.
-docker compose config
+docker compose config --quiet
 docker compose up --build -d
 bash ../../scripts/health-check.sh
 ```
@@ -112,9 +112,12 @@ bash ../../scripts/health-check.sh
 python scripts/preflight-check.py --target all
 ```
 
-### Pengujian Regresi Topologi Multi-Host (15 Invariant):
+### Pengujian Regresi Topologi Multi-Host:
 ```bash
 python scripts/verify-infra-topology.py
+python scripts/test-preflight.py
+python scripts/test-image-security.py
+python scripts/verify-documentation.py
 ```
 
 ### Health Check per Node:
@@ -149,3 +152,13 @@ bash scripts/health-check.sh --target staging
 - [Backup & Restore](docs/BACKUP_RESTORE.md)
 - [Struktur Folder](docs/FOLDER_STRUCTURE.md)
 - [Preflight Checklist](deployment/preflight/README.md)
+- [Indeks dokumentasi](docs/README.md)
+- [Integrasi dan pengujian disposable](docs/INTEGRATION.md)
+- [Bukti UAT terbaru](docs/BUSINESS_UAT_2026-10-04.md)
+- [Kesiapan produksi dan blocker](docs/PRODUCTION_READINESS_2026-10-04.md)
+
+Local Compose mematikan test tools/runtime secara default. Konfigurasi model normal
+dan pengujian TEST disposable dijelaskan terpisah pada panduan integrasi. Image database
+kandidat memiliki Dockerfile di repository ini; volume operasional existing harus
+melalui logical migration/restore staging sebelum mengganti distro atau image.
+Jangan menjalankan `up --build` pada database existing hanya untuk memperbarui aplikasi.

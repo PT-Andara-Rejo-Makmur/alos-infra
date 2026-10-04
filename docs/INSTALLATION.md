@@ -24,7 +24,7 @@ alos-workspace/
 Set-Location alos-workspace\alos-infra\environments\local
 Copy-Item .env.example .env
 docker compose version
-docker compose config
+docker compose config --quiet
 ```
 
 ## Linux/macOS
@@ -33,7 +33,7 @@ docker compose config
 cd alos-workspace/alos-infra/environments/local
 cp .env.example .env
 docker compose version
-docker compose config
+docker compose config --quiet
 ```
 
 Isi secret development lokal sebelum `up`. Jangan mengisi contoh file atau melakukan commit

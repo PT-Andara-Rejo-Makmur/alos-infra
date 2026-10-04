@@ -1,10 +1,11 @@
-# Panduan Deployment Production (3 VPS Multi-Host)
+# Panduan Deployment Production (APP, GENESIS, DATA dan Model Gateway)
 
 Arsitektur production ALOS MVP-2 membagi beban kerja ke dalam tiga node VPS terpisah untuk menjamin pemisahan otoritas keamanan dan skalabilitas:
 
 - **VPS 1 (APP)**: Menjalankan Caddy reverse proxy, `alos-web`, dan `alos-backend`.
 - **VPS 2 (GENESIS)**: Menjalankan `genesis-ai` (ModelGateway & runtime AI terisolasi).
 - **VPS 3 (DATA)**: Menjalankan database PostgreSQL dengan ekstensi `pgvector` dan backup process.
+- **Model Gateway (node/layanan eksternal keempat)**: Profil model yang telah disahkan, diakses hanya oleh GENESIS melalui HTTPS; bukan ingress Web atau pemegang kredensial database. Rujuk [operasi gateway](model-gateway-operations.md).
 
 Setiap VPS memiliki file `compose.yaml` dan `.env.example` terdedikasi di bawah direktori `environments/production/`.
 
@@ -36,7 +37,7 @@ Setiap VPS memiliki file `compose.yaml` dan `.env.example` terdedikasi di bawah 
   - `GENESIS_BIND_IP` (IP private host VPS 2, wajib diisi, bukan loopback).
   - `ALOS_BACKEND_BASE_URL` (menunjuk ke IP private VPS 1: `http://<APP_PRIVATE_BIND_IP>:8000` untuk tool execution & cancellation probe).
   - `ALOS_INTERNAL_TOKEN` (identik dengan `GENESIS_INTERNAL_TOKEN` di VPS 1).
-  - `DEFAULT_MODEL_ROUTE=disabled`.
+  - `DEFAULT_MODEL_ROUTE=nine_router` sesuai Compose GENESIS. Preflight mewajibkan HTTPS, key privat dan setidaknya satu profil; `disabled` adalah kill switch eksplisit, bukan bukti kesiapan produksi.
 
 ### Node 3: VPS 3 — DATA (`environments/production/data/`)
 - **Tanggung Jawab**: Persistensi database relasional dan vector, WAL storage, serta proses backup.
@@ -44,9 +45,23 @@ Setiap VPS memiliki file `compose.yaml` dan `.env.example` terdedikasi di bawah 
 - **Port Private**: Port `5432/tcp` diikat ke IP private host (`POSTGRES_BIND_IP`).
 - **Akses Diizinkan**: Hanya menerima koneksi inbound dari IP private VPS 1. Akses dari VPS 2 (GENESIS) ditolak.
 - **Variabel Wajib Operator**:
-  - `POSTGRES_IMAGE=pgvector/pgvector:pg16`
+  - `POSTGRES_IMAGE=<registry>/alos-postgres@sha256:<64-hex>`: image hasil `database/Dockerfile`, wajib scan dan restore proof sebelum rilis. Jangan memakai fallback mutable `pgvector:pg16` untuk deployment.
   - `POSTGRES_BIND_IP` (IP private host VPS 3, wajib diisi, bukan loopback).
   - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`.
+
+### Kandidat image database development
+
+`database/Dockerfile` membangun PostgreSQL 16 pada Alpine dengan pgvector 0.8.7 dari
+commit dan checksum sumber yang dipin, serta gosu 1.19 yang dibangun ulang dengan Go
+1.27.1. Compiler tidak disalin ke runtime. CI membangun, memindai, dan menguji script
+backup/restore sesungguhnya, termasuk HNSW/IVFFlat dan query nearest-vector.
+
+Image ini sudah diuji pada database audit baru. Database operasional yang berasal
+dari image Debian harus menjalani logical dump/restore ke volume staging baru,
+verifikasi collation/index, penerimaan aplikasi dan rollback sebelum beralih basis
+OS. Jangan mengganti image pada volume operasional hanya berdasarkan scan bersih.
+Build lokal tidak menghasilkan digest registry yang bisa dideploy; operator harus
+menetapkan digest artifact rilis yang telah disahkan.
 
 ---
 

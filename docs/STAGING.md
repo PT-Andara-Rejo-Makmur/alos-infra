@@ -21,7 +21,7 @@ Staging dilarang keras berinteraksi dengan komponen production:
 1. **Database & Volume**: Staging menggunakan named volume lokal (`postgres-data` di dalam project `alos-staging`). Dilarang menghubungkan staging Backend ke VPS 3 Production Data.
 2. **Kredensial**: `POSTGRES_PASSWORD` dan `GENESIS_INTERNAL_TOKEN` staging harus bernilai acak dan terpisah dari production secrets.
 3. **Domain / Hostname**: Wajib menggunakan subdomain staging khusus (misal: `staging.alos.id` dan `staging-api.alos.id`), tidak boleh menggunakan domain production.
-4. **Model Route**: Menggunakan `DEFAULT_MODEL_ROUTE=disabled` secara default.
+4. **Model Route**: Compose memilih `DEFAULT_MODEL_ROUTE=nine_router`; preflight mewajibkan HTTPS, key privat dan profil model yang valid. Konfigurasi kosong gagal tertutup. `disabled` adalah kill switch eksplisit, bukan deployment staging yang siap model.
 
 ---
 
@@ -30,7 +30,7 @@ Staging dilarang keras berinteraksi dengan komponen production:
 Untuk memastikan parity yang akurat dengan production:
 - Seluruh container aplikasi (`web`, `backend`, `genesis`, `otel-collector`) menerapkan `read_only: true` dan `tmpfs: [/tmp]`.
 - Resource limits (`deploy.resources.limits`) dideklarasikan secara eksplisit untuk mencegah overcommit sumber daya pada VPS 4.
-- Healthcheck aktif pada setiap container.
+- Web, Backend, GENESIS dan PostgreSQL mempunyai healthcheck. Jobs-worker dan collector perlu proof job/transport tersendiri; status running saja tidak membuktikan pekerjaannya berhasil.
 
 ---
 

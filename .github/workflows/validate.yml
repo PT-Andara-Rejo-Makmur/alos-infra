@@ -12,6 +12,7 @@ env:
   ALOS_WEB_IMAGE: example.invalid/alos-web:validation
   ALOS_BACKEND_IMAGE: example.invalid/alos-backend:validation
   GENESIS_IMAGE: example.invalid/genesis-ai:validation
+  POSTGRES_IMAGE: example.invalid/alos-postgres@sha256:4444444444444444444444444444444444444444444444444444444444444444
   POSTGRES_DB: alos_validation
   POSTGRES_USER: alos_validation
   POSTGRES_PASSWORD: ci
@@ -86,6 +87,9 @@ jobs:
             --build-context contracts=../alos-contracts \
             --build-arg NEXT_PUBLIC_ALOS_API_BASE_URL=https://api.example.invalid \
             ../alos-web
+          docker buildx build --load --tag alos-postgres:h1-validation database
+          docker pull caddy:2.11-alpine@sha256:881bbc60f9986d5ab8e7cfd6cf7e4ef3c9c0439fef2429d035d065577882f028
+          docker pull otel/opentelemetry-collector:0.162.0@sha256:310a800ad69ee430e7c541796852a242c9c7db97aaad4daa5ccf843c525fbdb2
 
       - name: Verify canonical contract artifact in runtime images
         run: |
@@ -94,6 +98,32 @@ jobs:
             "from pathlib import Path; from alos.contracts import CanonicalContractCatalog; root=Path('/contracts'); CanonicalContractCatalog(root); assert (root/'VERSION').is_file()"
           docker run --rm --entrypoint python genesis-ai:h1-validation -c \
             "from pathlib import Path; from genesis.contracts import CanonicalContractCatalog; root=Path('/contracts'); CanonicalContractCatalog(root); assert (root/'VERSION').is_file()"
+
+      - name: Scan runtime images and block fixable HIGH or CRITICAL vulnerabilities
+        run: |
+          set -euo pipefail
+          mkdir -p .audit/security
+          index=0
+          for image in alos-backend:h1-validation genesis-ai:h1-validation alos-web:h1-validation alos-postgres:h1-validation caddy:2.11-alpine@sha256:881bbc60f9986d5ab8e7cfd6cf7e4ef3c9c0439fef2429d035d065577882f028 otel/opentelemetry-collector:0.162.0@sha256:310a800ad69ee430e7c541796852a242c9c7db97aaad4daa5ccf843c525fbdb2; do
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock:ro \
+              -v "$PWD/.audit/security:/reports" \
+              -v alos-trivy-db-cache:/root/.cache \
+              aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
+              image --image-src docker --scanners vuln --disable-telemetry --skip-version-check \
+              --no-progress --format json --output "/reports/image-$index.json" "$image"
+            index=$((index + 1))
+          done
+          python3 scripts/verify-image-security.py .audit/security/image-*.json
+
+      - name: Retain all runtime vulnerability findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alos-runtime-security
+          path: workspace/alos-infra/.audit/security
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Validasi seluruh Compose file
         shell: bash
@@ -118,7 +148,7 @@ jobs:
           -e WEB_HOSTNAME=web.example.invalid
           -e API_HOSTNAME=api.example.invalid
           -v "$PWD/reverse-proxy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
-          caddy:2.10-alpine
+          caddy:2.11-alpine@sha256:881bbc60f9986d5ab8e7cfd6cf7e4ef3c9c0439fef2429d035d065577882f028
           caddy validate --config /etc/caddy/Caddyfile
 
       - name: Validasi syntax script
@@ -131,13 +161,22 @@ jobs:
           bash -n database/restore/restore.sh
           bash -n database/migration/migrate.sh
           pwsh -NoProfile -Command '$errors = @(); Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object { $tokens = $null; $parseErrors = $null; [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null; $errors += $parseErrors }; if ($errors.Count) { $errors | Format-List; exit 1 }'
-          python3 -m py_compile scripts/verify-infra-topology.py scripts/preflight-check.py scripts/test-restore-proof.py scripts/test-business-worker.py scripts/ara-smoke.py scripts/verify-ara-roundtrip.py
+          python3 -m py_compile scripts/verify-infra-topology.py scripts/preflight-check.py scripts/test-preflight.py scripts/verify-image-security.py scripts/test-image-security.py scripts/test-restore-proof.py scripts/test-business-worker.py scripts/ara-smoke.py scripts/verify-ara-roundtrip.py
+          python3 scripts/test-preflight.py
+          python3 scripts/test-image-security.py
+
+      - name: Validasi collector configuration
+        run: >-
+          docker run --rm
+          -v "$PWD/observability/otel/collector-config.yaml:/etc/otelcol/config.yaml:ro"
+          otel/opentelemetry-collector:0.162.0@sha256:310a800ad69ee430e7c541796852a242c9c7db97aaad4daa5ccf843c525fbdb2
+          validate --config=/etc/otelcol/config.yaml
 
       - name: Uji automated restore proof pada disposable PostgreSQL
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/test-restore-proof.py
+          ALOS_RESTORE_POSTGRES_IMAGE=alos-postgres:h1-validation python3 scripts/test-restore-proof.py
 
       - name: Validasi file dan boundary
         shell: bash

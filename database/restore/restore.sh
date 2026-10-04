@@ -44,6 +44,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ ! "${target_db}" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
+  printf 'ERROR: Target database wajib identifier ASCII aman (maksimum 63 karakter).\n' >&2
+  exit 2
+fi
+
 if [[ -z "${backup_file}" ]]; then
   printf 'ERROR: Path file backup wajib ditentukan.\n' >&2
   printf 'Contoh: CONFIRM_DATABASE_RESTORE=YES %s backups/alos-db-timestamp.dump --target-db alos_staging\n' "$0" >&2
@@ -128,24 +133,39 @@ trap cleanup_container_file EXIT
 
 printf 'Memulai controlled restore ke database [%s]...\n' "${target_db}"
 
-# Ensure target database exists if not already present
-docker compose -f "${compose_file}" exec -T postgres sh -c \
-  'psql --username="$POSTGRES_USER" -d template1 -tc "SELECT 1 FROM pg_database WHERE datname = '\'"$target_db"\''" | grep -q 1 || psql --username="$POSTGRES_USER" -d template1 -c "CREATE DATABASE \"'"$target_db"'\" WITH TEMPLATE template1;"' 2>/dev/null || true
+# Fail closed on a database creation error; never swallow permission or connection failures.
+if ! docker compose -f "${compose_file}" exec -T postgres sh -c \
+  'psql --username="$POSTGRES_USER" --dbname=template1 -v ON_ERROR_STOP=1 --set=restore_db="$1"' \
+  sh "${target_db}" <<'SQL'
+SELECT format('CREATE DATABASE %I WITH TEMPLATE template0', :'restore_db')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'restore_db');
+\gexec
+SQL
+then
+  printf 'ERROR: Database tujuan tidak dapat disiapkan. Restore DIBATALKAN.\n' >&2
+  exit 4
+fi
 
 # Copy backup to container
-docker compose -f "${compose_file}" cp "${backup_file}" "postgres:${container_file}"
+docker_backup_file="${backup_file}"
+if command -v cygpath >/dev/null 2>&1; then
+  docker_backup_file="$(cygpath -m "${backup_file}")"
+fi
+docker compose -f "${compose_file}" cp "${docker_backup_file}" "postgres:${container_file}"
 
 # Execute deterministic pg_restore
 if ! docker compose -f "${compose_file}" exec -T postgres sh -c \
-  'pg_restore --clean --if-exists --exit-on-error --no-owner --no-privileges --username="$POSTGRES_USER" --dbname="'"$target_db"'" "$1"' \
-  sh "${container_file}"; then
+  'pg_restore --clean --if-exists --exit-on-error --no-owner --no-privileges --username="$POSTGRES_USER" --dbname="$1" "$2"' \
+  sh "${target_db}" "${container_file}"; then
   printf 'ERROR: pg_restore mengalami kegagalan pada database [%s].\n' "${target_db}" >&2
   exit 4
 fi
 
 # Verify restore success and pgvector extension
-if ! docker compose -f "${compose_file}" exec -T postgres sh -c \
-  'psql --username="$POSTGRES_USER" --dbname="'"$target_db"'" --tuples-only --command="SELECT 1; SELECT extname FROM pg_extension WHERE extname = '\''vector'\'';"' >/dev/null; then
+restored_vector="$(docker compose -f "${compose_file}" exec -T postgres sh -c \
+  'psql --username="$POSTGRES_USER" --dbname="$1" -v ON_ERROR_STOP=1 -Atc "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = '\''vector'\'');"' \
+  sh "${target_db}" | tr -d '\r\n')"
+if [[ "${restored_vector}" != "t" ]]; then
   printf 'ERROR: Verifikasi hasil restore gagal pada database [%s].\n' "${target_db}" >&2
   exit 5
 fi

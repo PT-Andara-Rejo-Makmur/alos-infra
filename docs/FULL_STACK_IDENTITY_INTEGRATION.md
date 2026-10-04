@@ -7,7 +7,7 @@ checkout, and telemetry collector.
 
 - Web joins only `edge` and can reach Backend there.
 - Backend joins `edge`, private `internal`, and private `data`.
-- GENESIS joins only private `internal`; it has no published port and no data network.
+- GENESIS joins private `internal` plus `model-egress` for the configured gateway; it has no published port or data network.
 - PostgreSQL joins only private `data` and has no published port.
 - Web receives no GENESIS URL and therefore has no direct network path to GENESIS or PostgreSQL.
 

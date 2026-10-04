@@ -17,6 +17,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 DISALLOWED_PRODUCTION_BINDS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1", "::"}
@@ -39,12 +40,8 @@ def parse_env_file(path: Path) -> dict[str, str]:
 def get_effective_env(file_env: dict[str, str]) -> dict[str, str]:
     effective: dict[str, str] = {}
     for k, v in file_env.items():
-        if v:
-            effective[k] = v
-        elif k in os.environ and os.environ[k]:
-            effective[k] = os.environ[k]
-        else:
-            effective[k] = ""
+        # Match Compose interpolation, including an explicitly empty environment override.
+        effective[k] = os.environ.get(k, v)
     return effective
 
 
@@ -52,16 +49,10 @@ def validate_image_immutability(image_ref: str, service_name: str, errors: list[
     if not image_ref:
         errors.append(f"[{service_name.upper()}] Image reference kosong atau tidak terdefinisi")
         return
-    if image_ref.endswith(":latest"):
+    # Version tags can be overwritten; only a complete digest identifies immutable bytes.
+    if not re.fullmatch(r"[^\s@]+@sha256:[a-f0-9]{64}", image_ref):
         errors.append(
-            f"[{service_name.upper()}] Image reference '{image_ref}' menggunakan mutable tag ':latest'. "
-            "Wajib menggunakan immutable cryptographic digest pinning (@sha256:...)"
-        )
-        return
-    # Require @sha256: digest or immutable semantic tag (disallow vague floating tags)
-    if "@sha256:" not in image_ref and not re.search(r":v?\d+\.\d+\.\d+", image_ref):
-        errors.append(
-            f"[{service_name.upper()}] Image reference '{image_ref}' tidak memiliki digest pinning (@sha256:...) atau semver release"
+            f"[{service_name.upper()}] Image wajib memakai digest sha256 lengkap (64 karakter hex)."
         )
 
 
@@ -83,6 +74,8 @@ def validate_app(env: dict[str, str], errors: list[str]) -> None:
         validate_image_immutability(env["ALOS_WEB_IMAGE"], "web", errors)
     if env.get("ALOS_BACKEND_IMAGE"):
         validate_image_immutability(env["ALOS_BACKEND_IMAGE"], "backend", errors)
+    if env.get("CADDY_IMAGE"):
+        validate_image_immutability(env["CADDY_IMAGE"], "caddy", errors)
 
     bind_ip = env.get("APP_PRIVATE_BIND_IP", "").strip().lower()
     if bind_ip in DISALLOWED_PRODUCTION_BINDS:
@@ -101,6 +94,7 @@ def validate_app(env: dict[str, str], errors: list[str]) -> None:
 
 
 def validate_genesis(env: dict[str, str], errors: list[str]) -> None:
+    validate_model_router(env, errors)
     required = [
         "GENESIS_IMAGE",
         "ALOS_BACKEND_BASE_URL",
@@ -131,6 +125,7 @@ def validate_genesis(env: dict[str, str], errors: list[str]) -> None:
 
 def validate_data(env: dict[str, str], errors: list[str]) -> None:
     required = [
+        "POSTGRES_IMAGE",
         "POSTGRES_DB",
         "POSTGRES_USER",
         "POSTGRES_PASSWORD",
@@ -139,6 +134,9 @@ def validate_data(env: dict[str, str], errors: list[str]) -> None:
     for key in required:
         if not env.get(key):
             errors.append(f"[DATA] {key} wajib diisi dan tidak boleh kosong")
+
+    if env.get("POSTGRES_IMAGE"):
+        validate_image_immutability(env["POSTGRES_IMAGE"], "postgres", errors)
 
     bind_ip = env.get("POSTGRES_BIND_IP", "").strip().lower()
     if bind_ip in DISALLOWED_PRODUCTION_BINDS:
@@ -155,10 +153,15 @@ def validate_data(env: dict[str, str], errors: list[str]) -> None:
 
 
 def validate_staging(env: dict[str, str], errors: list[str]) -> None:
+    validate_model_router(env, errors)
+    for key in ("ALOS_WEB_IMAGE", "ALOS_BACKEND_IMAGE", "GENESIS_IMAGE", "POSTGRES_IMAGE", "CADDY_IMAGE", "OTEL_COLLECTOR_IMAGE"):
+        if env.get(key):
+            validate_image_immutability(env[key], key, errors)
     required = [
         "ALOS_WEB_IMAGE",
         "ALOS_BACKEND_IMAGE",
         "GENESIS_IMAGE",
+        "POSTGRES_IMAGE",
         "WEB_HOSTNAME",
         "API_HOSTNAME",
         "POSTGRES_DB",
@@ -173,6 +176,24 @@ def validate_staging(env: dict[str, str], errors: list[str]) -> None:
     web_host = env.get("WEB_HOSTNAME", "")
     if web_host and "staging" not in web_host.lower() and "stg" not in web_host.lower() and "localhost" not in web_host and "invalid" not in web_host:
         errors.append(f"[STAGING] WEB_HOSTNAME ('{web_host}') berpotensi tertukar dengan production hostname")
+
+
+def validate_model_router(env: dict[str, str], errors: list[str]) -> None:
+    if env.get("DEFAULT_MODEL_ROUTE") != "nine_router":
+        return
+    try:
+        url = urlsplit(env.get("NINE_ROUTER_BASE_URL", ""))
+        secure = (url.scheme == "https" and url.hostname and not url.username
+                  and not url.password and not url.query and not url.fragment)
+    except ValueError:
+        secure = False
+    if not secure:
+        errors.append("[MODEL] NINE_ROUTER_BASE_URL wajib endpoint HTTPS tanpa credential/query/fragment")
+    if not env.get("NINE_ROUTER_API_KEY"):
+        errors.append("[MODEL] NINE_ROUTER_API_KEY wajib tersedia untuk route yang diaktifkan")
+    if not any(env.get("NINE_ROUTER_MODEL_" + name) for name in
+               ("DEFAULT", "FAST", "STANDARD", "REASONING", "CODING", "CRITICAL")):
+        errors.append("[MODEL] Minimal satu model router wajib dikonfigurasi dan readiness policy diuji")
 
 
 def validate_cross_environment_isolation(prod_env_file: Path | None, staging_env_file: Path | None, errors: list[str]) -> None:
@@ -218,6 +239,10 @@ def main() -> int:
                     env_path = repo_root / "environments" / "production" / target / ".env.example"
                 prod_file = env_path
 
+        if target == "staging":
+            staging_file = env_path
+        else:
+            prod_file = env_path
         print(f"Memvalidasi preflight target [{target.upper()}] menggunakan: {env_path}")
         raw_env = parse_env_file(env_path)
         effective_env = get_effective_env(raw_env)
@@ -240,6 +265,8 @@ def main() -> int:
         rollback_ref = os.environ.get("PREVIOUS_KNOWN_GOOD_IMAGE", "")
         if not rollback_ref:
             errors.append("[ROLLBACK] PREVIOUS_KNOWN_GOOD_IMAGE wajib disediakan saat change window memerlukan rollback reference")
+        else:
+            validate_image_immutability(rollback_ref, "rollback", errors)
 
     if errors:
         print("\n--- PREFLIGHT VALIDATION GAGAL ---", file=sys.stderr)

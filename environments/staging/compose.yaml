@@ -2,7 +2,7 @@ name: alos-staging
 
 services:
   caddy:
-    image: ${CADDY_IMAGE:-caddy:2.10-alpine}
+    image: ${CADDY_IMAGE:-caddy:2.11-alpine@sha256:881bbc60f9986d5ab8e7cfd6cf7e4ef3c9c0439fef2429d035d065577882f028}
     environment:
       WEB_HOSTNAME: ${WEB_HOSTNAME:?WEB_HOSTNAME wajib diisi}
       API_HOSTNAME: ${API_HOSTNAME:?API_HOSTNAME wajib diisi}
@@ -22,6 +22,8 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
 
   web:
     image: ${ALOS_WEB_IMAGE:?ALOS_WEB_IMAGE wajib diisi}
@@ -35,6 +37,7 @@ services:
     tmpfs: [/tmp]
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
@@ -85,6 +88,7 @@ services:
     tmpfs: [/tmp]
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 15s
@@ -134,7 +138,7 @@ services:
       ALOS_INTERNAL_TOKEN: ${GENESIS_INTERNAL_TOKEN:?GENESIS_INTERNAL_TOKEN wajib diisi}
       ALOS_CONTRACTS_PATH: /contracts
       DEFAULT_MODEL_ROUTE: ${DEFAULT_MODEL_ROUTE:-nine_router}
-      NINE_ROUTER_BASE_URL: ${NINE_ROUTER_BASE_URL:-http://103.93.135.49:20128/v1}
+      NINE_ROUTER_BASE_URL: ${NINE_ROUTER_BASE_URL:-}
       NINE_ROUTER_API_KEY: ${NINE_ROUTER_API_KEY:-}
       NINE_ROUTER_TIMEOUT_SECONDS: ${NINE_ROUTER_TIMEOUT_SECONDS:-10}
       NINE_ROUTER_MODEL_DEFAULT: ${NINE_ROUTER_MODEL_DEFAULT:-}
@@ -152,6 +156,7 @@ services:
     tmpfs: [/tmp]
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3)"]
       interval: 15s
@@ -166,7 +171,7 @@ services:
           memory: 2G
 
   postgres:
-    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE wajib image hasil database/Dockerfile dengan digest yang diaudit}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB wajib diisi}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER wajib diisi}
@@ -193,7 +198,7 @@ services:
           memory: 2G
 
   otel-collector:
-    image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector-contrib:0.135.0}
+    image: ${OTEL_COLLECTOR_IMAGE:-otel/opentelemetry-collector:0.162.0@sha256:310a800ad69ee430e7c541796852a242c9c7db97aaad4daa5ccf843c525fbdb2}
     command: ["--config=/etc/otelcol/config.yaml"]
     expose: ["4317", "4318"]
     networks: [internal]

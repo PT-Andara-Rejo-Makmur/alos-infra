@@ -37,9 +37,9 @@ def run_compose_config_json(compose_path: Path, env_path: Path) -> dict:
         "ALOS_WEB_IMAGE": "example.invalid/alos-web:v1.0.0@sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "ALOS_BACKEND_IMAGE": "example.invalid/alos-backend:v1.0.0@sha256:2222222222222222222222222222222222222222222222222222222222222222",
         "GENESIS_IMAGE": "example.invalid/genesis-ai:v1.0.0@sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        "POSTGRES_IMAGE": "pgvector/pgvector:pg16",
-        "CADDY_IMAGE": "caddy:2.10-alpine",
-        "OTEL_COLLECTOR_IMAGE": "otel/opentelemetry-collector-contrib:0.135.0",
+        "POSTGRES_IMAGE": "example.invalid/alos-postgres@sha256:" + "4" * 64,
+        "CADDY_IMAGE": "caddy:2.11-alpine@sha256:881bbc60f9986d5ab8e7cfd6cf7e4ef3c9c0439fef2429d035d065577882f028",
+        "OTEL_COLLECTOR_IMAGE": "otel/opentelemetry-collector:0.162.0@sha256:310a800ad69ee430e7c541796852a242c9c7db97aaad4daa5ccf843c525fbdb2",
         "WEB_HOSTNAME": "web.example.invalid",
         "API_HOSTNAME": "api.example.invalid",
         "POSTGRES_DB": "alos_test",
@@ -54,6 +54,7 @@ def run_compose_config_json(compose_path: Path, env_path: Path) -> dict:
         "ALOS_BACKEND_BASE_URL": "http://10.0.0.1:8000",
         "DATABASE_PRIVATE_HOST": "10.0.0.3",
         "GENESIS_PRIVATE_HOST": "10.0.0.2",
+        "NINE_ROUTER_BASE_URL": "https://router.example.invalid/v1",
     }
     result = subprocess.run(
         cmd,
@@ -282,6 +283,12 @@ def test_topology() -> None:
             assert not svc_conf.get("privileged", False), (
                 f"Req 17 GAGAL: Service '{svc_name}' di {name} memiliki privileged: true!"
             )
+            if svc_name in {"web", "backend", "jobs-worker", "genesis"}:
+                assert "ALL" in svc_conf.get("cap_drop", []), (
+                    f"Req 17 GAGAL: Service '{svc_name}' di {name} tidak menghapus capabilities"
+                )
+                assert svc_conf.get("read_only") is True
+                assert "no-new-privileges:true" in svc_conf.get("security_opt", [])
     print("  [PASS] 17. No privileged containers across all compose configs")
 
     # 18. No docker.sock mount across all compose configs
@@ -384,11 +391,13 @@ def test_topology() -> None:
             else:
                 assert "NINE_ROUTER_API_KEY" in environment
                 assert environment["NINE_ROUTER_BASE_URL"].endswith("/v1")
+                assert environment["NINE_ROUTER_BASE_URL"].startswith("https://")
                 assert "DATABASE_URL" not in environment
     assert "model-egress" in staging_json["services"]["genesis"]["networks"]
     assert "model-egress" not in staging_json["services"]["postgres"]["networks"]
     for example in (genesis_env_file, staging_env_file):
         assert "NINE_ROUTER_API_KEY=\n" in example.read_text(encoding="utf-8")
+        assert "NINE_ROUTER_BASE_URL=\n" in example.read_text(encoding="utf-8")
     print("  [PASS] 27. External model gateway has GENESIS-only credential and isolated egress")
 
     print("\n================================================================================")

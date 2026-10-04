@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ sys.path.insert(0, str(WORKSPACE / "alos-contracts/generated/python"))
 from alos.config import Settings as BackendSettings  # noqa: E402
 from alos.dependencies import get_tool_registry  # noqa: E402
 from alos.main import create_app as backend_app  # noqa: E402
+from alos.ara.orchestration import needed_tools  # noqa: E402 - deterministic mock fixture only
 from alos.memory import MemoryRecord  # noqa: E402
 from alos.registry import RegistryEntry, RegistryState  # noqa: E402
 from alos.tools.business.catalog import BUSINESS_TOOLS  # noqa: E402
@@ -30,7 +32,19 @@ from genesis.config import Settings as GenesisSettings  # noqa: E402
 from genesis.main import create_app as genesis_app  # noqa: E402
 
 
-async def main(*, production_mock: bool = False) -> None:
+async def main(*, production_mock: bool = False, live_provider: bool = False) -> None:
+    production_mode = production_mock or live_provider
+    provider_options = {"NINE_ROUTER_BASE_URL": "http://router.test/v1" if production_mock else "",
+                        "NINE_ROUTER_API_KEY": uuid4().hex if production_mock else ""}
+    if live_provider:
+        from sqlalchemy.engine import make_url
+        database = make_url(os.environ.get("ALOS_TEST_DATABASE_URL", ""))
+        if os.environ.get("ALOS_ALLOW_LIVE_PROVIDER_TESTS") != "1" or not (database.database or "").endswith("_audit"):
+            raise RuntimeError("Live acceptance requires explicit opt-in and a disposable *_audit database")
+        configuration = Path(os.environ["ALOS_LIVE_PROVIDER_ENV_FILE"]).resolve(strict=True)
+        live_settings = GenesisSettings(_env_file=configuration)
+        provider_options = {key: getattr(live_settings, key) for key in type(live_settings).model_fields
+                            if key.startswith("NINE_ROUTER_")}
     runtime_results: dict[str, dict] = {}
 
     async def inspect_response(result: httpx.Response) -> None:
@@ -71,11 +85,43 @@ async def main(*, production_mock: bool = False) -> None:
             ALOS_BACKEND_BASE_URL="http://backend.test",
             ALOS_INTERNAL_TOKEN="ara-test-service-token",
             ENABLE_TEST_RUNTIME=True,
-            DEFAULT_MODEL_ROUTE="nine_router" if production_mock else "disabled",
-            NINE_ROUTER_BASE_URL="http://router.test/v1" if production_mock else "",
-            NINE_ROUTER_API_KEY=uuid4().hex if production_mock else "",
+            DEFAULT_MODEL_ROUTE="nine_router" if production_mode else "disabled",
+            **provider_options,
         )
     )
+    live_decisions: list[dict] = []
+    if live_provider:
+        async def capture_live_decision(response: httpx.Response) -> None:
+            if response.status_code != 200:
+                await response.aread()
+                diagnostic = {"provider_http_status": response.status_code,
+                              "method": response.request.method,
+                              "path": response.request.url.path}
+                try:
+                    error = response.json().get("error", {})
+                    if isinstance(error, dict):
+                        for field in ("code", "type"):
+                            value = error.get(field)
+                            if isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9_.-]{1,80}", value):
+                                diagnostic[field] = value
+                        message = str(error.get("message", "")).casefold()
+                        diagnostic["signals"] = [signal for signal in
+                            ("quota", "cooldown", "rate limit", "capacity", "upstream", "credentials")
+                            if signal in message]
+                except (ValueError, AttributeError):
+                    pass
+                live_decisions.append(diagnostic)
+                return
+            if response.request.method != "POST":
+                return
+            await response.aread()
+            document = response.json()
+            content = document.get("choices", [{}])[0].get("message", {}).get("content", "")
+            credential = genesis.state.settings.NINE_ROUTER_API_KEY.get_secret_value()
+            live_decisions.append({"content": str(content).replace(credential, "[REDACTED]")[:8000],
+                                   "usage": document.get("usage")})
+        genesis.state.provider_http_client = httpx.AsyncClient(trust_env=False, follow_redirects=False,
+                                                              event_hooks={"response": [capture_live_decision]})
     async with (
         httpx.AsyncClient(
             transport=httpx.ASGITransport(app=backend), base_url="http://backend.test"
@@ -134,7 +180,7 @@ async def main(*, production_mock: bool = False) -> None:
         sales = await account(
             "sales",
             ["DIVISION_MEMBER"],
-            ["sales.read", "sales.write", "task.create"],
+            ["sales.read", "sales.write", "task.create", "approval.request", "capability.propose"],
             "WORKSPACE",
         )
         executive = await account(
@@ -181,14 +227,39 @@ async def main(*, production_mock: bool = False) -> None:
             else:
                 data = json.loads(message)
                 observed = {item["tool_id"] for item in data["observations"]}
+                # Scripted provider fixture, never production routing. The product
+                # exposes a scoped catalog and lets the actual model choose reads.
+                desired = list(needed_tools(data["message"]))
+                if data["message"] == "Bagaimana minat calon pelanggan saat ini?":
+                    desired = ["sales.lead.list"]
+                if data["message"] == "Jumlahkan dua indikator penjualan yang tersedia":
+                    desired = ["sales.summary.read"]
+                if data["message"] == "Read canonical source":
+                    desired = data["allowed_tool_ids"]
+                if "sumber sebelumnya" in data["message"].casefold():
+                    for item in reversed(data.get("history", [])):
+                        if item["role"] == "USER" and needed_tools(item["content"]):
+                            desired = list(needed_tools(item["content"]))
+                            break
                 unread = [
-                    tool for tool in data["allowed_tool_ids"] if tool not in observed
+                    tool for tool in desired
+                    if tool in data["allowed_tool_ids"] and tool not in observed
                 ]
+                text = data["message"].casefold()
                 if provider_mode["value"] == "admin":
                     decision = {
                         "kind": "TOOL",
                         "tool_intent": {"tool_id": "admin.approve", "arguments": {}},
                     }
+                elif text in {"halo ara", "terima kasih"}:
+                    decision = {"kind": "FINISH", "output": {"conversation_act":
+                        "GREETING" if text == "halo ara" else "THANKS"}}
+                elif "buat agent" in text or "buat task" in text or "bayar vendor" in text:
+                    decision = {"kind": "APPROVAL_REQUIRED", "output": {"action_kind":
+                        "CAPABILITY_DRAFT" if "buat agent" in text else
+                        "TASK" if "buat task" in text else "MATERIAL_ACTION"}}
+                elif set(desired) - (set(data["allowed_tool_ids"]) | observed):
+                    decision = {"kind": "NEEDS_INFO", "output": {"clarification": "ACCESS"}}
                 elif unread:
                     decision = {
                         "kind": "TOOL",
@@ -197,7 +268,7 @@ async def main(*, production_mock: bool = False) -> None:
                             "arguments": data["tool_arguments"].get(unread[0], {}),
                         },
                     }
-                elif not data["allowed_tool_ids"]:
+                elif not observed:
                     decision = {"kind": "NEEDS_INFO"}
                 else:
                     claims = [
@@ -216,6 +287,18 @@ async def main(*, production_mock: bool = False) -> None:
                         "evidence_ids": data["evidence_ids"],
                         "output": {"claims": claims},
                     }
+                    if data["message"] == "Jumlahkan dua indikator penjualan yang tersedia":
+                        metrics = data["observations"][0]["output"]["data"]["metrics"]
+                        selected = [(index, metric) for index, metric in enumerate(metrics)
+                                    if metric["available"] and metric["value"] is not None
+                                    and metric["unit"] == "COUNT"][:2]
+                        assert len(selected) == 2
+                        decision["output"] = {
+                            "claims": [{"tool_id": "sales.summary.read",
+                                        "pointer": f"/data/metrics/{index}/value",
+                                        "value": metric["value"]} for index, metric in selected],
+                            "calculations": [{"operation": "SUM", "claim_indices": [0, 1]}],
+                        }
             content = (
                 "invalid model JSON"
                 if provider_mode["value"] == "malformed"
@@ -234,6 +317,7 @@ async def main(*, production_mock: bool = False) -> None:
             genesis.state.provider_http_client = httpx.AsyncClient(
                 transport=httpx.MockTransport(router_mock)
             )
+        if production_mode:
             # Simulate committed release snapshots ONLY in disposable acceptance. Production code
             # does not create/approve/activate definitions or manufacture human decisions.
             for token in (sales, executive, other):
@@ -249,7 +333,7 @@ async def main(*, production_mock: bool = False) -> None:
                         "max_steps": 16,
                         "max_tool_calls": 12,
                         "max_tokens": 12000,
-                        "timeout_seconds": 30,
+                        "timeout_seconds": 60 if live_provider else 30,
                         "max_depth": 1,
                         "max_children": 1,
                         "concurrency_limit": 1,
@@ -312,20 +396,28 @@ async def main(*, production_mock: bool = False) -> None:
                 "Authoritative CONNECTED readiness; NORMAL mode; released fixture authority: PASS"
             )
 
-        async def ask(token: str, message: str, expected: str) -> dict:
+        last_threads: dict[str, str] = {}
+
+        async def ask(token: str, message: str, expected: str, *, existing_thread: str | None = None) -> dict:
             headers = {
                 "Authorization": f"Bearer {token}",
                 "X-Correlation-ID": f"corr_ara_{uuid4().hex}",
             }
-            thread = await client.post("/api/v1/ara/threads", headers=headers, json={})
-            assert thread.status_code == 201, thread.text
-            thread_id = thread.json()["thread_id"]
+            if existing_thread:
+                thread_id = existing_thread
+            else:
+                thread = await client.post("/api/v1/ara/threads", headers=headers, json={})
+                assert thread.status_code == 201, thread.text
+                thread_id = thread.json()["thread_id"]
+            last_threads[token] = thread_id
             run = await client.post(
                 f"/api/v1/ara/threads/{thread_id}/messages",
                 headers=headers,
                 json={"message": message},
             )
-            if run.status_code != 200:
+            if run.status_code != 200 or run.json().get("response", {}).get("response_type") != expected:
+                if live_provider:
+                    print(json.dumps({"synthetic_live_model_decisions": live_decisions}, ensure_ascii=False))
                 records = await backend.state.agent_run_authority.list_runs()
                 print(
                     json.dumps(
@@ -339,7 +431,9 @@ async def main(*, production_mock: bool = False) -> None:
                                 for item in records[-1:]
                             ],
                             "runtime_errors": [
-                                {"status": item["status"], "error": item.get("error")}
+                                {"status": item["status"], "error": item.get("error"),
+                                 "tools": [{"tool_id": tool["tool_id"], "status": tool["status"],
+                                            "error": tool.get("error")} for tool in item.get("tool_results", [])]}
                                 for item in runtime_results.values()
                                 if item["status"] != "COMPLETED"
                             ],
@@ -353,7 +447,7 @@ async def main(*, production_mock: bool = False) -> None:
             history = await client.get(
                 f"/api/v1/ara/threads/{thread_id}/messages", headers=headers
             )
-            assert history.status_code == 200 and len(history.json()) == 2, history.text
+            assert history.status_code == 200 and len(history.json()) >= (4 if existing_thread else 2), history.text
             assert history.json()[-1]["response"] == answer
             hidden = await client.get(
                 f"/api/v1/ara/threads/{thread_id}",
@@ -367,8 +461,46 @@ async def main(*, production_mock: bool = False) -> None:
             )
             return answer
 
+        if live_provider:
+            greeting = await ask(sales, "Halo ARA", "CONVERSATION")
+            assert not greeting["sources"] and not greeting["failed_sources"]
+            live_headers = {"Authorization": f"Bearer {sales}"}
+            seeded = await client.post("/api/v1/sales/leads", headers=live_headers,
+                                       json={"source": "SYNTHETIC_LIVE_AUDIT_ONLY", "interest": "AUDIT_LIVE_SYNTHETIC_ONLY"})
+            assert seeded.status_code == 201, seeded.text
+            answer = await ask(sales, "Tampilkan minat lead Sales yang tercatat beserta statusnya.", "ANSWER")
+            assert answer["sources"] and "AUDIT_LIVE_SYNTHETIC_ONLY" in answer["answer"], answer
+            followup = await ask(sales, "Bagaimana status lead itu sekarang? Baca kembali sumbernya.", "ANSWER",
+                                 existing_thread=last_threads[sales])
+            assert followup["sources"] and "Baru" in followup["answer"], followup
+            await ask(sales, "Tampilkan data Finance", "DENIED")
+            proposal = await ask(sales, "Buat usulan task untuk menindaklanjuti lead Sales.", "NEEDS_REVIEW")
+            assert proposal["action_proposal"]["executed"] is False
+            overview = await ask(executive, "Ringkas kondisi Sales dan HR dari indikator yang tersedia.", "ANSWER")
+            assert overview["sources"] and all(source["evidence_ref"]["content_hash"] for source in overview["sources"])
+            actual_runs = [run for run in runtime_results.values() if run["status"] == "COMPLETED"]
+            assert actual_runs and all(run.get("usage", {}).get("provider_request_ids") for run in actual_runs)
+            results.append("Real provider request IDs, canonical evidence and review-only proposal verified on synthetic audit data")
+            print(json.dumps({"result": "PASS", "mode": "LIVE_PROVIDER_SYNTHETIC_AUDIT", "checks": results,
+                              "usage": [run.get("usage") for run in actual_runs]}, ensure_ascii=False, indent=2))
+            await backend.state.database.dispose()
+            await genesis.state.provider_http_client.aclose()
+            return
         leads = await ask(sales, "Tampilkan lead Sales", "ANSWER")
-        assert leads["sources"] and "Belum ada data" in leads["answer"]
+        assert leads["sources"] and (
+            "Tidak ada catatan" if production_mock else "Belum ada data"
+        ) in leads["answer"]
+        if production_mock:
+            for text in ("Halo ARA", "Terima kasih"):
+                conversation = await ask(sales, text, "CONVERSATION")
+                assert conversation["sources"] == [] and conversation["failed_sources"] == []
+                assert "action_proposal" not in conversation
+            paraphrase = await ask(sales, "Bagaimana minat calon pelanggan saat ini?", "ANSWER")
+            assert [source["tool_id"] for source in paraphrase["sources"]] == ["sales.lead.list"]
+            results.append("Model-selected source beyond keyword routing, bounded conversation: PASS")
+            calculation = await ask(sales, "Jumlahkan dua indikator penjualan yang tersedia", "ANSWER")
+            assert "Perhitungan dari indikator terverifikasi" in calculation["answer"]
+            assert [source["tool_id"] for source in calculation["sources"]] == ["sales.summary.read"]
         await ask(sales, "Tampilkan data Finance", "DENIED")
         proposal = await ask(sales, "Buat task tindak lanjut", "NEEDS_REVIEW")
         assert proposal["action_proposal"]["executed"] is False
@@ -403,7 +535,7 @@ async def main(*, production_mock: bool = False) -> None:
                 )
                 == 0
             )
-        research = await ask(executive, "Analisis kondisi perusahaan", "NEEDS_REVIEW")
+        research = await ask(executive, "Riset kondisi perusahaan", "NEEDS_REVIEW")
         assert research["research_result"]["findings"] and research["sources"]
         child = research["delegation_result"]
         assert child["parent_run_id"] and child["root_run_id"] == child["parent_run_id"]
@@ -457,7 +589,7 @@ async def main(*, production_mock: bool = False) -> None:
                 )
                 >= 1
             )
-        await ask(sales, "Analisis lead Sales", "DENIED")
+        await ask(sales, "Riset lead Sales", "DENIED")
         headers = {"Authorization": f"Bearer {sales}"}
         forged = await client.post(
             "/api/v1/ara/threads", headers=headers, json={"tenant_id": "forged"}
@@ -577,7 +709,7 @@ async def main(*, production_mock: bool = False) -> None:
             client.post(
                 f"/api/v1/ara/threads/{thread['thread_id']}/messages",
                 headers=executive_headers,
-                json={"message": "Analisis kondisi perusahaan"},
+                json={"message": "Riset kondisi perusahaan"},
             )
         )
         await asyncio.wait_for(entered.wait(), timeout=20)
@@ -637,7 +769,8 @@ async def main(*, production_mock: bool = False) -> None:
                 )
             provider_mode["value"] = "normal"
             assert provider_calls and all(
-                set(call) == {"model", "messages", "max_tokens", "stream"}
+                set(call) - {"response_format"} == {"model", "messages", "max_tokens", "stream"}
+                and call.get("response_format", {"type": "json_object"}) == {"type": "json_object"}
                 for call in provider_calls
             )
             assert all(
@@ -682,4 +815,4 @@ async def main(*, production_mock: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(production_mock="--production-mock" in sys.argv))
+    asyncio.run(main(production_mock="--production-mock" in sys.argv, live_provider="--live-provider" in sys.argv))

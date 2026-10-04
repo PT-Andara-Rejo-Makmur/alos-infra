@@ -33,6 +33,33 @@ def compose_output(*arguments: str) -> str:
     return result.stdout.strip()
 
 
+def verify_telemetry_transport() -> None:
+    # Exercise the exact three configured OTLP pipelines. These are synthetic
+    # transport probes, not proof of application instrumentation or alert delivery.
+    probe = r'''
+import json, time, urllib.request
+now = time.time_ns()
+resource = {"attributes": [{"key": "service.name", "value": {"stringValue": "alos-integration-probe"}}]}
+payloads = {
+    "traces": {"resourceSpans": [{"resource": resource, "scopeSpans": [{"spans": [{
+        "traceId": "a" * 32, "spanId": "b" * 16, "name": "synthetic-transport-probe", "kind": 1,
+        "startTimeUnixNano": str(now), "endTimeUnixNano": str(now + 1_000_000)}]}]}]},
+    "metrics": {"resourceMetrics": [{"resource": resource, "scopeMetrics": [{"metrics": [{
+        "name": "alos.integration.probe", "gauge": {"dataPoints": [{"timeUnixNano": str(now), "asInt": "1"}]}}]}]}]},
+    "logs": {"resourceLogs": [{"resource": resource, "scopeLogs": [{"logRecords": [{
+        "timeUnixNano": str(now), "severityNumber": 9, "body": {"stringValue": "synthetic-transport-probe"}}]}]}]},
+}
+for signal, payload in payloads.items():
+    request = urllib.request.Request("http://otel-collector:4318/v1/" + signal,
+        data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        result = json.load(response)
+        assert response.status == 200 and not result.get("partialSuccess"), (signal, result)
+    print("OTLP " + signal + " transport accepted")
+'''
+    print(compose_output("exec", "-T", "backend", "python", "-c", probe))
+
+
 def postgres_sql(statement: str) -> str:
     return compose_output(
         "exec", "-T", "postgres", "psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
@@ -1798,6 +1825,7 @@ def main() -> int:
         {**run, "scope_refs": ["scope.admin"]},
         token,
     )
+    verify_telemetry_transport()
     print("Web-Backend-PostgreSQL-GENESIS deterministic integration passed")
     return 0
 

@@ -2,7 +2,7 @@ name: alos-production-data
 
 services:
   postgres:
-    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE wajib image hasil database/Dockerfile dengan digest yang diaudit}
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB wajib diisi}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER wajib diisi}
